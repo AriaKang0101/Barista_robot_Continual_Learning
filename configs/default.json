@@ -1,0 +1,20 @@
+{
+  "seed": 0,
+  "device": "auto",
+  "timesteps_per_task": 100352,
+  "n_steps": 512,
+  "batch_size": 128,
+  "n_epochs": 10,
+  "learning_rate": 0.0003,
+  "gamma": 0.99,
+  "gae_lambda": 0.95,
+  "clip_range": 0.2,
+  "ent_coef": 0.01,
+  "vf_coef": 0.5,
+  "max_grad_norm": 0.5,
+  "ewc_lambda": 1000.0,
+  "fisher_samples": 128,
+  "evaluation_episodes": 100,
+  "task_order": ["A", "B", "C"]
+}
+

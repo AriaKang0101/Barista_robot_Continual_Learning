@@ -1,0 +1,10 @@
+# Install the appropriate CPU/CUDA build of torch first (see README).
+torch>=2.3,<2.7
+stable-baselines3==2.7.0
+gymnasium==1.2.0
+numpy>=1.26,<3
+opencv-python-headless==4.11.0.86
+coppeliasim-zmqremoteapi-client==2.0.4
+matplotlib>=3.8,<4
+tensorboard>=2.16,<3
+
