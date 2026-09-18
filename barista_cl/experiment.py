@@ -21,11 +21,18 @@ from .simulator import Simulator
 
 
 class EpisodeLog(BaseCallback):
-    def __init__(self, path, stage, task):
+    def __init__(self, path, stage, task, env, stage_start, budget,
+                 initial_fraction, full_fraction):
         super().__init__()
         self.path, self.stage, self.task = Path(path), stage, task
+        self.env, self.stage_start, self.budget = env, stage_start, budget
+        self.initial_fraction, self.full_fraction = initial_fraction, full_fraction
 
     def _on_step(self):
+        progress = min(1.0, max(0.0, (self.model.num_timesteps - self.stage_start) / self.budget))
+        expansion = min(1.0, progress / self.full_fraction)
+        self.env.set_curriculum_fraction(
+            self.initial_fraction + (1.0 - self.initial_fraction) * expansion)
         info = self.locals["infos"][0]
         if self.locals["dones"][0]:
             append_csv(self.path, {
@@ -138,13 +145,18 @@ def run(scene, tasks_path, config_path, output, method, seed=None, device=None,
             manifest["resolved_device"] = str(model.device)
             for stage, task in enumerate(order, start=1):
                 train_env.set_task(task)
+                train_env.set_curriculum_fraction(config["curriculum_initial_fraction"])
                 # Evaluation shares the simulator, so never reuse an old rollout
                 # observation. set_env(force_reset=True) resets frame/episode state.
                 model.set_env(vector, force_reset=True)
                 vector.seed(seed + 1009 * stage)
                 begin = model.num_timesteps
+                callback = EpisodeLog(
+                    output / "training_episodes.csv", stage, task, train_env, begin,
+                    config["timesteps_per_task"], config["curriculum_initial_fraction"],
+                    config["curriculum_full_fraction"])
                 model.learn(total_timesteps=config["timesteps_per_task"], reset_num_timesteps=False,
-                            tb_log_name=method, callback=EpisodeLog(output / "training_episodes.csv", stage, task))
+                            tb_log_name=method, callback=callback)
                 assert model.num_timesteps - begin == config["timesteps_per_task"]
                 if method == "ewc":
                     model.consolidate(task, config["fisher_samples"], seed + 7001 * stage)

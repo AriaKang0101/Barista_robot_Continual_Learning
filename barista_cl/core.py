@@ -167,6 +167,12 @@ def load_config(path):
         raise ValueError("fisher_samples cannot exceed the final rollout size")
     if cfg["ewc_lambda"] < 0 or not np.isfinite(cfg["ewc_lambda"]):
         raise ValueError("ewc_lambda must be finite and nonnegative")
+    initial = cfg.get("curriculum_initial_fraction")
+    full = cfg.get("curriculum_full_fraction")
+    if not isinstance(initial, (int, float)) or not 0 < initial <= 1:
+        raise ValueError("curriculum_initial_fraction must be in (0, 1]")
+    if not isinstance(full, (int, float)) or not 0 < full <= 1:
+        raise ValueError("curriculum_full_fraction must be in (0, 1]")
     if sorted(cfg["task_order"]) != ["A", "B", "C"]:
         raise ValueError("task_order must contain A, B, C once each")
     return cfg

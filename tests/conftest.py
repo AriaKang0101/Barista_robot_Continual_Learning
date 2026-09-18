@@ -29,8 +29,15 @@ class FakeSimulator:
     def start_at(self, q, clearance=0.0):
         self.q = np.array(q, dtype=float)
 
-    def random_safe_start(self, rng, sampler, goals, tolerance):
+    def random_safe_start(self, rng, sampler, goals, tolerance, target_q=None,
+                          curriculum_fraction=1.0):
+        self.last_target_q = None if target_q is None else np.asarray(target_q).copy()
+        self.last_curriculum_fraction = curriculum_fraction
         anchors = np.asarray(sampler["anchors"])
+        if target_q is not None and curriculum_fraction < 1:
+            distances = np.max(np.abs(anchors - np.asarray(target_q)), axis=1)
+            count = max(1, int(np.ceil(len(anchors) * curriculum_fraction)))
+            anchors = anchors[np.argsort(distances)[:count]]
         anchor = anchors[int(rng.integers(len(anchors)))]
         self.q = anchor + rng.uniform(-0.01, 0.01, size=2)
         return self.q.copy()

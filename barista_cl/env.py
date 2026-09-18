@@ -23,6 +23,10 @@ class BaristaEnv(gym.Env):
         self.split = split
         self.tolerance = tasks["goal_tolerance"]
         self.max_steps = tasks["max_steps"]
+        sampler = tasks["training_sampler"]
+        self.joint_lower = np.asarray(sampler["lower"], dtype=np.float32)
+        self.joint_upper = np.asarray(sampler["upper"], dtype=np.float32)
+        self.curriculum_fraction = 1.0
         self.task = "A"
         self.frames = deque(maxlen=4)
         self.action_space = spaces.Box(-1.0, 1.0, (2,), np.float32)
@@ -30,6 +34,7 @@ class BaristaEnv(gym.Env):
         self.observation_space = spaces.Dict({
             "image": spaces.Box(0, 255, (4, 84, 84), np.uint8),
             "goal": spaces.Box(-np.inf, np.inf, (6,), np.float32),
+            "joints": spaces.Box(-1.0, 1.0, (2,), np.float32),
         })
         self.base_position = np.asarray(tasks["fixed_geometry"]["base"]).reshape(3, 4)[:, 3]
         self.sim.assert_geometry(tasks["fixed_geometry"])
@@ -43,13 +48,21 @@ class BaristaEnv(gym.Env):
         self.task = task
         self.done = True
 
+    def set_curriculum_fraction(self, fraction):
+        if self.split != "train" or not 0 < fraction <= 1:
+            raise ValueError("Training curriculum fraction must be in (0, 1]")
+        self.curriculum_fraction = float(fraction)
+
     @property
     def goal(self):
         return np.asarray(self.tasks[self.task]["points"])
 
     def observation(self):
+        q = self.sim.joint_positions().astype(np.float32)
+        normalized_q = 2.0 * (q - self.joint_lower) / (self.joint_upper - self.joint_lower) - 1.0
         return {"image": np.stack(self.frames),
-                "goal": (self.goal - self.base_position).astype(np.float32).ravel()}
+                "goal": (self.goal - self.base_position).astype(np.float32).ravel(),
+                "joints": np.clip(normalized_q, -1.0, 1.0).astype(np.float32)}
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
@@ -60,7 +73,9 @@ class BaristaEnv(gym.Env):
                 raise ValueError("Training uses continuous safe random starts, not start_index")
             goals = [t["points"] for t in self.tasks.values()]
             start = self.sim.random_safe_start(
-                self.np_random, self.specification["training_sampler"], goals, self.tolerance)
+                self.np_random, self.specification["training_sampler"], goals, self.tolerance,
+                target_q=self.tasks[self.task]["q"],
+                curriculum_fraction=self.curriculum_fraction)
             index = None
         else:
             if index is None:

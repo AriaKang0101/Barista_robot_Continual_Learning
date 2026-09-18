@@ -49,6 +49,7 @@ def test_invalid_goals_and_overlap_rejected(task_data):
 
 def test_environment_seed_frame_reset_and_checker(fake_sim, task_data):
     env = BaristaEnv(fake_sim, task_data)
+    env.set_curriculum_fraction(0.25)
     check_env(env, skip_render_check=True)
     a, ai = env.reset(seed=77)
     env.step(np.ones(2))
@@ -57,6 +58,10 @@ def test_environment_seed_frame_reset_and_checker(fake_sim, task_data):
     np.testing.assert_allclose(ai["start_q"], bi["start_q"])
     np.testing.assert_array_equal(a["image"], b["image"])
     assert b["goal"].shape == (6,)
+    assert b["joints"].shape == (2,)
+    assert np.all(np.abs(b["joints"]) <= 1)
+    assert fake_sim.last_curriculum_fraction == pytest.approx(0.25)
+    np.testing.assert_allclose(fake_sim.last_target_q, task_data["tasks"][0]["q"])
     np.testing.assert_array_equal(b["image"][0], b["image"][-1])
 
 

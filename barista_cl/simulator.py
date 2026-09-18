@@ -148,7 +148,8 @@ class Simulator:
             return False
         return True
 
-    def random_safe_start(self, rng, sampler, goals, tolerance):
+    def random_safe_start(self, rng, sampler, goals, tolerance, target_q=None,
+                          curriculum_fraction=1.0):
         """Start at a new continuous safe pose sampled around the connected safe set."""
         anchors = np.asarray(sampler["anchors"], dtype=float)
         lower = np.asarray(sampler["lower"], dtype=float)
@@ -157,6 +158,14 @@ class Simulator:
         clearance = float(sampler["clearance"])
         joint1_exclusion = float(sampler["joint1_exclusion_abs"])
         goals = np.asarray(goals, dtype=float)
+        if not 0 < curriculum_fraction <= 1:
+            raise ValueError("curriculum_fraction must be in (0, 1]")
+        if target_q is not None and curriculum_fraction < 1:
+            target_q = np.asarray(target_q, dtype=float)
+            scale = upper - lower
+            distance = np.max(np.abs((anchors - target_q) / scale), axis=1)
+            count = max(1, int(np.ceil(len(anchors) * curriculum_fraction)))
+            anchors = anchors[np.argsort(distance)[:count]]
         for _ in range(int(sampler["max_attempts"])):
             anchor = anchors[int(rng.integers(len(anchors)))]
             q = np.clip(anchor + rng.uniform(-jitter, jitter), lower, upper)

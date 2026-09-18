@@ -14,5 +14,7 @@
   "max_grad_norm": 0.5,
   "ewc_lambda": 1000.0,
   "fisher_samples": 128,
+  "curriculum_initial_fraction": 0.15,
+  "curriculum_full_fraction": 0.7,
   "task_order": ["A", "B", "C"]
 }
