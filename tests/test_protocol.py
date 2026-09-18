@@ -41,6 +41,10 @@ def test_invalid_goals_and_overlap_rejected(task_data):
     bad["dynamic_validation"]["all_passed"] = False
     with pytest.raises(ValueError, match="prepare"):
         validate_tasks(bad)
+    bad = copy.deepcopy(task_data)
+    bad["eval_starts"][1] = bad["eval_starts"][0]
+    with pytest.raises(ValueError, match="distinct"):
+        validate_tasks(bad)
 
 
 def test_environment_seed_frame_reset_and_checker(fake_sim, task_data):
@@ -49,7 +53,8 @@ def test_environment_seed_frame_reset_and_checker(fake_sim, task_data):
     a, ai = env.reset(seed=77)
     env.step(np.ones(2))
     b, bi = env.reset(seed=77)
-    assert ai == bi
+    assert ai["task_id"] == bi["task_id"] and ai["start_index"] == bi["start_index"]
+    np.testing.assert_allclose(ai["start_q"], bi["start_q"])
     np.testing.assert_array_equal(a["image"], b["image"])
     assert b["goal"].shape == (6,)
     np.testing.assert_array_equal(b["image"][0], b["image"][-1])
@@ -76,4 +81,3 @@ def test_timeout_and_task_switch(fake_sim, task_data):
     env.set_task("B")
     obs_b, _ = env.reset(seed=0)
     assert not np.array_equal(obs_a["goal"], obs_b["goal"])
-

@@ -19,7 +19,8 @@ class BaristaEnv(gym.Env):
         self.sim = simulator
         self.specification = tasks
         self.tasks = {t["id"]: t for t in tasks["tasks"]}
-        self.starts = np.asarray(tasks[f"{split}_starts"], dtype=float)
+        self.starts = np.asarray(tasks["eval_starts"], dtype=float) if split == "eval" else None
+        self.split = split
         self.tolerance = tasks["goal_tolerance"]
         self.max_steps = tasks["max_steps"]
         self.task = "A"
@@ -54,11 +55,20 @@ class BaristaEnv(gym.Env):
         super().reset(seed=seed)
         options = options or {}
         index = options.get("start_index")
-        if index is None:
-            index = int(self.np_random.integers(len(self.starts)))
-        if not 0 <= index < len(self.starts):
-            raise ValueError("start_index outside prepared pool")
-        self.sim.start_at(self.starts[index])
+        if self.split == "train":
+            if index is not None:
+                raise ValueError("Training uses continuous safe random starts, not start_index")
+            goals = [t["points"] for t in self.tasks.values()]
+            start = self.sim.random_safe_start(
+                self.np_random, self.specification["training_sampler"], goals, self.tolerance)
+            index = None
+        else:
+            if index is None:
+                index = int(self.np_random.integers(len(self.starts)))
+            if not 0 <= index < len(self.starts):
+                raise ValueError("start_index outside prepared evaluation pool")
+            start = self.starts[index]
+            self.sim.start_at(start, self.specification["training_sampler"]["clearance"])
         points = self.sim.points()
         if reached(points, self.goal, self.tolerance):
             raise RuntimeError("Initial pose already satisfies task; regenerate nontrivial tasks")
@@ -68,7 +78,8 @@ class BaristaEnv(gym.Env):
         frame = self.sim.image()
         self.frames.clear()
         self.frames.extend([frame.copy() for _ in range(4)])
-        return self.observation(), {"task_id": self.task, "start_index": index}
+        return self.observation(), {"task_id": self.task, "start_index": index,
+                                    "start_q": np.asarray(start, dtype=float).tolist()}
 
     def step(self, action):
         if self.done:

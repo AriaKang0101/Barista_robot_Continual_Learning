@@ -60,21 +60,21 @@ def main():
 
     prep = commands.add_parser("prepare", help="Discover goals and dynamically validate all selected start/goal pairs")
     scene_args(prep)
-    prep.add_argument("--output", default="artifacts/tasks.json")
+    prep.add_argument("--output", default="artifacts/tasks_v2.json")
     prep.add_argument("--seed", type=int, default=2026)
     prep.add_argument("--grid-size", type=int, default=17)
     prep.add_argument("--tolerance", type=float, default=0.05)
     prep.add_argument("--clearance", type=float, default=0.01)
-    prep.add_argument("--train-starts", type=int, default=6)
-    prep.add_argument("--eval-starts", type=int, default=3)
+    prep.add_argument("--eval-starts", type=int, default=30,
+                      help="Distinct random held-out starts; each is evaluated once")
     prep.add_argument("--max-steps", type=int, default=500)
     preview = commands.add_parser("preview", help="Show a validated controller route, not a learned PPO result")
     scene_args(preview)
-    preview.add_argument("--tasks", default="artifacts/tasks.json")
+    preview.add_argument("--tasks", default="artifacts/tasks_v2.json")
     preview.add_argument("--task", choices=list("ABC"), default="A")
     train = commands.add_parser("train", help="Run one method/seed; preserves model and optimizer across tasks")
     scene_args(train)
-    train.add_argument("--tasks", default="artifacts/tasks.json")
+    train.add_argument("--tasks", default="artifacts/tasks_v2.json")
     train.add_argument("--config", default="configs/default.json")
     train.add_argument("--method", choices=["sequential", "ewc"], required=True)
     train.add_argument("--output", required=True)
@@ -108,7 +108,8 @@ def main():
             import numpy as np
             print("This is a validation controller, NOT PPO.")
             print(drive_route(sim, np.array(data["preview_paths"][args.task]), goal,
-                              data["goal_tolerance"], data["max_steps"]))
+                              data["goal_tolerance"], data["max_steps"],
+                              data["training_sampler"]["clearance"]))
     elif args.command == "train":
         from .experiment import run
         run(args.scene, args.tasks, args.config, args.output, args.method, args.seed, args.device,
@@ -120,4 +121,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

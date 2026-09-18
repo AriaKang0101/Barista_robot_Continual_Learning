@@ -26,8 +26,14 @@ class FakeSimulator:
         return np.array([[np.cos(q1), np.sin(q1), 0.2],
                          [np.cos(q1) + np.cos(q1 + q2), np.sin(q1) + np.sin(q1 + q2), 0.2]])
 
-    def start_at(self, q):
+    def start_at(self, q, clearance=0.0):
         self.q = np.array(q, dtype=float)
+
+    def random_safe_start(self, rng, sampler, goals, tolerance):
+        anchors = np.asarray(sampler["anchors"])
+        anchor = anchors[int(rng.integers(len(anchors)))]
+        self.q = anchor + rng.uniform(-0.01, 0.01, size=2)
+        return self.q.copy()
 
     def joint_positions(self):
         return self.q.copy()
@@ -75,9 +81,12 @@ def task_data(fake_sim):
     for label, q in zip("ABC", [[0.9, 0.2], [-0.9, 0.2], [0.1, -1.1]]):
         fake_sim.start_at(q)
         tasks.append({"id": label, "q": q, "points": fake_sim.points().tolist()})
-    return {"schema_version": 1, "scene_blob": SCENE_BLOB, "runtime": fake_sim.runtime,
+    anchors = [[-0.8, -0.4], [0.0, 0.0], [0.8, 0.4]]
+    return {"schema_version": 2, "scene_blob": SCENE_BLOB, "runtime": fake_sim.runtime,
             "fixed_geometry": fake_sim.fixed_geometry, "tasks": tasks,
             "goal_tolerance": 0.05, "max_steps": 5,
-            "train_starts": [[0.0, 0.0], [0.2, 0.2]], "eval_starts": [[-0.2, -0.2]],
+            "training_sampler": {"kind": "continuous_connected_joint_space", "anchors": anchors,
+                "lower": [-1.2, -1.2], "upper": [1.2, 1.2], "jitter": [0.1, 0.1],
+                "clearance": 0.01, "joint1_exclusion_abs": 0.0, "max_attempts": 20},
+            "eval_starts": [[-0.2, -0.2], [0.2, -0.2], [-0.2, 0.2]],
             "dynamic_validation": {"all_passed": True}}
-

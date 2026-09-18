@@ -86,7 +86,7 @@ def route(graph, source, target):
 
 
 def validate_tasks(data):
-    if data.get("schema_version") != 1 or data.get("scene_blob") != SCENE_BLOB:
+    if data.get("schema_version") != 2 or data.get("scene_blob") != SCENE_BLOB:
         raise ValueError("Tasks must be prepared from the pinned original scene")
     tasks = data.get("tasks", [])
     if len(tasks) != 3 or {t["id"] for t in tasks} != {"A", "B", "C"}:
@@ -102,12 +102,31 @@ def validate_tasks(data):
         for j in range(i):
             if goal_separation(tasks[i]["points"], tasks[j]["points"]) <= 2 * tol:
                 raise ValueError("Overlapping task success regions")
-    for split in ["train_starts", "eval_starts"]:
-        poses = np.asarray(data[split])
-        if poses.ndim != 2 or poses.shape[1] != 2 or len(poses) == 0 or not np.all(np.isfinite(poses)):
-            raise ValueError(f"Invalid {split}")
-    if {tuple(q) for q in data["train_starts"]} & {tuple(q) for q in data["eval_starts"]}:
-        raise ValueError("Training and evaluation starts overlap")
+    sampler = data.get("training_sampler", {})
+    if sampler.get("kind") != "continuous_connected_joint_space":
+        raise ValueError("Invalid training sampler kind")
+    anchors = np.asarray(sampler.get("anchors", []), dtype=float)
+    lower = np.asarray(sampler.get("lower", []), dtype=float)
+    upper = np.asarray(sampler.get("upper", []), dtype=float)
+    jitter = np.asarray(sampler.get("jitter", []), dtype=float)
+    if anchors.ndim != 2 or anchors.shape[1:] != (2,) or len(anchors) < 3 or not np.all(np.isfinite(anchors)):
+        raise ValueError("Invalid training sampler anchors")
+    if any(v.shape != (2,) or not np.all(np.isfinite(v)) for v in [lower, upper, jitter]):
+        raise ValueError("Invalid training sampler bounds")
+    if np.any(lower >= upper) or np.any(jitter <= 0) or np.any(anchors < lower) or np.any(anchors > upper):
+        raise ValueError("Invalid training sampler geometry")
+    if not np.isfinite(sampler.get("clearance", np.nan)) or sampler["clearance"] < 0:
+        raise ValueError("Invalid training sampler clearance")
+    if not isinstance(sampler.get("max_attempts"), int) or sampler["max_attempts"] < 1:
+        raise ValueError("Invalid training sampler attempts")
+    exclusion = sampler.get("joint1_exclusion_abs", np.nan)
+    if not np.isfinite(exclusion) or exclusion < 0:
+        raise ValueError("Invalid joint1 exclusion")
+    poses = np.asarray(data.get("eval_starts", []), dtype=float)
+    if poses.ndim != 2 or poses.shape[1:] != (2,) or len(poses) < 3 or not np.all(np.isfinite(poses)):
+        raise ValueError("Invalid eval_starts")
+    if len({tuple(q) for q in poses}) != len(poses):
+        raise ValueError("Evaluation starts must be distinct")
     if not data.get("dynamic_validation", {}).get("all_passed"):
         raise ValueError("Run prepare: every start/goal pair must pass dynamic validation")
 
@@ -137,7 +156,7 @@ def continual_metrics(matrix):
 
 def load_config(path):
     cfg = read_json(path)
-    for name in ["timesteps_per_task", "n_steps", "batch_size", "n_epochs", "fisher_samples", "evaluation_episodes"]:
+    for name in ["timesteps_per_task", "n_steps", "batch_size", "n_epochs", "fisher_samples"]:
         if not isinstance(cfg[name], int) or cfg[name] <= 0:
             raise ValueError(f"{name} must be a positive integer")
     if cfg["batch_size"] < 2 or cfg["n_steps"] % cfg["batch_size"]:

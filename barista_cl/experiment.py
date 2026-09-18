@@ -47,7 +47,7 @@ def append_csv(path, row):
         writer.writerow(row)
 
 
-def evaluate(model, env, task_ids, episodes, output, stage):
+def evaluate(model, env, task_ids, output, stage):
     """Frozen deterministic evaluation on held-out initial configurations."""
     rows = []
     previous_mode = model.policy.training
@@ -56,9 +56,9 @@ def evaluate(model, env, task_ids, episodes, output, stage):
         try:
             for task in task_ids:
                 env.set_task(task)
-                for episode in range(episodes):
-                    # Fixed, balanced sequence independent of method and seed.
-                    start = episode % len(env.starts)
+                # Every held-out random start is used exactly once. The saved
+                # bank is shared by all methods and training seeds.
+                for episode, start in enumerate(range(len(env.starts))):
                     obs, _ = env.reset(seed=100000 + episode, options={"start_index": start})
                     total = 0.0
                     while True:
@@ -151,7 +151,7 @@ def run(scene, tasks_path, config_path, output, method, seed=None, device=None,
                 checkpoint = output / f"stage_{stage}_{task}.zip"
                 # EWC anchors and Fisher tensors are included in SB3 model.save().
                 model.save(checkpoint)
-                rows = evaluate(model, eval_env, order[:stage], config["evaluation_episodes"],
+                rows = evaluate(model, eval_env, order[:stage],
                                 output / "evaluation_episodes.csv", stage)
                 for j, old_task in enumerate(order[:stage]):
                     matrix[stage - 1, j] = np.mean([r["success"] for r in rows if r["task"] == old_task])

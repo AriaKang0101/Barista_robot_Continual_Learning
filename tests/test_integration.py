@@ -13,11 +13,12 @@ def test_automatic_goal_preparation(monkeypatch, tmp_path):
     import barista_cl.prepare as module
     monkeypatch.setattr(module, "Simulator", FakeSimulator)
     path = tmp_path / "tasks.json"
-    module.prepare("unused.ttt", path, grid_size=7, train_starts=2, eval_starts=1)
+    module.prepare("unused.ttt", path, grid_size=7, eval_starts=3)
     tasks = read_json(path)
     validate_tasks(tasks)
     assert len(tasks["tasks"]) == 3
-    assert len(tasks["dynamic_validation"]["accepted_nodes"]) == 3
+    assert len(tasks["eval_starts"]) == 3
+    assert len(tasks["training_sampler"]["anchors"]) >= 3
 
 
 def test_failed_dynamic_validation_writes_no_tasks(monkeypatch, tmp_path):
@@ -26,7 +27,7 @@ def test_failed_dynamic_validation_writes_no_tasks(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "drive_route", lambda *a, **k: (False, 3, "collision"))
     output = tmp_path / "tasks.json"
     with pytest.raises(RuntimeError, match="Insufficient"):
-        module.prepare("unused.ttt", output, grid_size=5, train_starts=1, eval_starts=1)
+        module.prepare("unused.ttt", output, grid_size=5, eval_starts=3)
     assert not output.exists()
 
 
@@ -39,7 +40,7 @@ def test_full_runner_two_methods_three_stages_and_reports(monkeypatch, tmp_path,
     write_json(tasks_path, task_data)
     config = read_json("configs/default.json")
     config.update(n_steps=8, batch_size=4, n_epochs=1, timesteps_per_task=8,
-                  fisher_samples=4, evaluation_episodes=2, device="cpu")
+                  fisher_samples=4, device="cpu")
     write_json(config_path, config)
     paths = []
     for method in ["sequential", "ewc"]:
@@ -52,7 +53,7 @@ def test_full_runner_two_methods_three_stages_and_reports(monkeypatch, tmp_path,
         paths.append(path)
         with (path / "evaluation_episodes.csv").open() as f:
             rows = list(csv.DictReader(f))
-        assert len(rows) == (1 + 2 + 3) * 2
+        assert len(rows) == (1 + 2 + 3) * len(task_data["eval_starts"])
         assert {r["task"] for r in rows if r["stage"] == "3"} == set("ABC")
     # Consolidation and evaluation must not alter first-stage PPO parameters.
     a = EWCPPO.load(paths[0] / "stage_1_A.zip", device="cpu")

@@ -3,7 +3,7 @@
 고정된 바리스타 로봇 작업공간에서 **Sequential PPO vs PPO-EWC**를 비교합니다.
 한 정책을 `A → B → C`로 순차 학습하고 각 단계 후 이전 작업을 다시 평가합니다.
 
-**현재 상태:** 코드·테스트·실험 도구 구현. 실제 CoppeliaSim 장면에서의 목표 생성과 PPO 학습 결과는 아직 검증하지 않았습니다. 모의 환경 테스트를 실제 로봇 실험 결과로 해석하면 안 됩니다.
+**현재 상태:** Windows CoppeliaSim 4.9.0에서 장면 연결·목표 생성·preview·단일 Task A 예비학습을 확인했습니다. 초기 프로토콜의 제한된 시작 자세 문제를 보완한 schema v2를 사용합니다. 아직 A/B/C 전체 PPO-EWC 비교 결과는 없습니다.
 
 ## 원본 작업공간 유지
 
@@ -29,13 +29,13 @@
 | 행동 | 두 관절의 속도, 각각 최대 절댓값 0.8 rad/s |
 | 보상 | 두 목표까지 거리 감소 합 ×10, 성공 +100, 충돌 −20 |
 | 성공 | joint2 및 끝단이 각각 해당 목표 허용 오차 안에 있음 |
-| 충돌 | link1/link2/끝단과 wall/machine1/machine2 사이 충돌 |
+| 충돌 | link1/link2/끝단과 wall/machine1/machine2, 비인접 로봇 부품 사이 충돌 |
 | 종료 | 충돌 또는 성공 / 최대 step에서 timeout |
 | 비교 | 동일 PPO·환경에 EWC 정규화만 추가 |
 
 목표 A/B/C는 **위치쌍 도달 과제**입니다. 컵 파지, 음료 제조, 액체, 독립적인 6D pose 제어는 구현하지 않습니다. 자동 목표에 임의의 픽업/추출/제공 의미를 붙이지 않습니다. 충돌률은 측정하지만 안전 보장이나 PPO-Lagrangian을 구현한 것은 아닙니다.
 
-원본 대비 목표 입력, task 전환, 준비된 초기 자세 분포, 난수 처리, 프레임 초기화와 평가 체계가 추가됩니다. 기본 허용 오차 0.05 m는 원본의 0.15 m와 다릅니다. 가까운 목표들이 동일한 성공으로 판정되는 것을 줄이기 위한 **예비 설정**입니다. 실제 장면에서 검토하고 두 방법에 동일하게 적용하세요.
+원본 대비 목표 입력, task 전환, 안전 무작위 초기화, 난수 처리, 프레임 초기화와 평가 체계가 추가됩니다. 학습은 매 episode마다 연결된 안전 관절공간에서 새로운 연속 자세를 생성합니다. 평가는 별도 seed로 생성·저장한 다양한 held-out 자세를 모든 방법과 seed가 공유합니다. 기본 허용 오차 0.05 m는 원본의 0.15 m와 다릅니다.
 
 ## 1. 설치와 사양 확인
 
@@ -71,7 +71,7 @@ python -m barista_cl fetch-scene
 `scenes/safety_rl_2dof.ttt`에 원본을 다운로드하고 해시를 검증합니다. 기존 파일이 다르면 덮어쓰지 않습니다. 이미 가진 원본 파일을 쓰려면 이후 명령의 `--scene`에 경로를 전달하세요.
 
 ```bash
-python -m barista_cl prepare --scene /absolute/path/safety_rl_2dof.ttt
+python -m barista_cl prepare --scene /absolute/path/safety_rl_2dof.ttt --output artifacts/tasks_v2.json
 ```
 
 CoppeliaSim GUI를 실행해 두세요. 기본 ZeroMQ 포트는 23000입니다. 명령들이 장면 로드·시작·종료·step을 제어하므로 동시에 GUI에서 조작하지 마세요. 파일 해시가 다르면 원본과 동일한 환경 조건을 위해 실행을 중단합니다.
@@ -81,7 +81,7 @@ CoppeliaSim 물리 엔진을 시작할 때 고정 형상이 1 mm 미만으로 �
 ## 3. 목표 A/B/C 자동 생성
 
 ```bash
-python -m barista_cl prepare --output artifacts/tasks.json
+python -m barista_cl prepare --output artifacts/tasks_v2.json
 ```
 
 실제 장면에서 다음을 수행합니다.
@@ -91,19 +91,19 @@ python -m barista_cl prepare --output artifacts/tasks.json
 3. 인접 자세 사이를 최대 2° 간격으로 검사해 연결 그래프를 만듭니다.
 4. 가장 큰 연결 영역에서 성공 영역이 겹치지 않는 목표 A/B/C를 선택합니다.
 5. 실제 joint2와 끝단 좌표를 한 쌍으로 기록합니다. 좌표를 독립적으로 임의 생성하지 않습니다.
-6. 학습용 6개, 평가용 3개의 서로 다른 초기 자세를 찾습니다.
-7. **모든 선정 초기 자세 → 모든 목표**를 속도 제어기로 실제 물리 step을 수행하여, 충돌 없이 제한 step 안에 도달하는지 검사합니다.
-8. 전부 통과한 경우에만 `tasks.json`을 저장합니다.
+6. 가장 큰 안전 연결영역 전체를 학습 난수 sampler의 anchor로 저장합니다. 학습 reset마다 anchor 주변의 새로운 연속 관절각을 만들고 충돌·1 cm 거리·비인접 자기충돌·목표 중복을 검사합니다.
+7. 기본 30개의 서로 다른 평가 자세를 별도 난수로 생성합니다. 각 자세는 안전 연결영역에 이어져야 하며 A/B/C 모두에 대해 실제 물리 step 경로검증을 통과해야 합니다.
+8. 물리 시작 후에도 충돌·안전거리를 다시 검사합니다. 모든 조건을 통과한 경우에만 schema v2 task 파일을 저장합니다.
 
-Remote API 호출이 많아 시간이 걸릴 수 있으며 진행 상황이 출력됩니다. 기존 task 파일은 덮어쓰지 않습니다. 설정을 바꾸면 다른 `--output`을 지정하세요.
+Remote API 호출이 많아 시간이 걸릴 수 있으며 진행 상황이 출력됩니다. v1 파일과 호환되지 않으므로 기존 `artifacts/tasks.json`은 보존하고 `artifacts/tasks_v2.json`처럼 새 `--output`을 지정하세요.
 
 ```bash
-python -m barista_cl prepare --grid-size 21 --tolerance 0.05 --train-starts 12 --eval-starts 6 --output artifacts/tasks_v2.json
+python -m barista_cl prepare --grid-size 21 --tolerance 0.05 --eval-starts 50 --output artifacts/tasks_v2_50eval.json
 ```
 
 실패하면 유효한 목표를 꾸며서 채우지 않고 중단합니다. 출력된 경로 timeout·충돌 등을 확인하세요. `--max-steps`, `--clearance`를 바꾸면 프로토콜이 바뀝니다. 두 방법에 같은 준비 파일을 사용해야 합니다.
 
-검사는 지정된 충돌 쌍과 이산 시간/각도 샘플에 대한 것입니다. 모든 연속 경로의 안전이나 PPO의 학습 성공을 보장하지 않습니다. 기본 평가 자세 3개에서 100회 반복해도 100개의 독립 자세가 되는 것은 아닙니다. 본 실험에서는 초기 자세 수를 늘리는 것이 좋습니다.
+학습 초기화는 Gymnasium seed로 재현 가능하지만 매 episode 새 연속 자세를 생성하므로 두 방법이 정확히 같은 순서의 자세를 경험한다고 보장하지 않습니다. 대신 동일한 안전 분포에서 학습합니다. 평가는 저장된 held-out 자세를 각각 정확히 한 번 사용하므로 모든 방법·seed의 비교 조건이 같습니다. 검사는 지정된 충돌 쌍과 이산 시간/각도 샘플에 대한 것이며 모든 연속 경로의 절대적 안전을 보장하지 않습니다.
 
 검증 제어기의 움직임 확인:
 
@@ -162,7 +162,6 @@ Task 전환 시 모델과 optimizer를 새로 생성하지 않습니다. Task �
 | learning_rate | 0.0003 | 모든 task에 동일 상수 |
 | ewc_lambda | 1000 | 탐색 시작값이며 최적값 아님 |
 | fisher_samples | 128 | 마지막 현재-task rollout의 상태 표본 수 |
-| evaluation_episodes | 100 | task·단계별 평가 횟수 |
 | task_order | A, B, C | 작업 순서 |
 
 lambda는 Fisher 크기와 네트워크에 의존합니다. 10/100/1000 같은 후보를 별도 예비 검증에서 비교하고, 최종 평가 초기 자세로 값을 고르지 마세요. 망각이 거의 발생하지 않는 것도 결과입니다. EWC 효과를 보이기 위해 불리한 작업 순서만 선택하지 마세요.

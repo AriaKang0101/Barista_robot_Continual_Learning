@@ -55,6 +55,9 @@ class Simulator:
             self.joints = [self.handles[k] for k in ["j1", "j2"]]
             self.parts = [self.handles[k] for k in ["l1", "l2", "ee"]]
             self.obstacles = [self.handles[k] for k in ["wall", "machine1", "machine2"]]
+            # Adjacent links intentionally meet at their joint. Only non-adjacent
+            # pairs are valid self-collision checks for this 2-DoF mechanism.
+            self.self_collision_pairs = [(self.handles["l1"], self.handles["ee"])]
             self.fixed_geometry = self.geometry()
             self.sim.setBoolParam(self.sim.boolparam_realtime_simulation, False)
             self.sim.setStepping(True)
@@ -104,13 +107,26 @@ class Simulator:
         for handle in self.parts + self.joints:
             self.sim.resetDynamicObject(handle)
 
-    def start_at(self, q):
+    def too_close(self, clearance):
+        if clearance <= 0:
+            return False
+        return (any(self.sim.checkDistance(p, o, clearance)[0]
+                    for p in self.parts for o in self.obstacles)
+                or any(self.sim.checkDistance(a, b, clearance)[0]
+                       for a, b in self.self_collision_pairs))
+
+    def self_collision(self):
+        return any(self.sim.checkCollision(a, b)[0] for a, b in self.self_collision_pairs)
+
+    def start_at(self, q, clearance=0.0):
         self.stop()
         self.assert_geometry()
         self.place(q)
+        if self.collision() or self.too_close(clearance):
+            raise RuntimeError("Requested initial pose is not collision/clearance safe")
         self.sim.startSimulation()
         self.sim.step()
-        if self.collision():
+        if self.collision() or self.too_close(clearance):
             raise RuntimeError("A prepared initial pose collided after physics initialization; run prepare again")
         self.assert_geometry()
 
@@ -121,16 +137,49 @@ class Simulator:
         return np.asarray([self.sim.getObjectPosition(self.handles[k], -1) for k in ["j2", "ee"]])
 
     def collision(self):
-        return any(self.sim.checkCollision(p, o)[0] for p in self.parts for o in self.obstacles)
+        return (any(self.sim.checkCollision(p, o)[0] for p in self.parts for o in self.obstacles)
+                or self.self_collision())
 
     def safe_pose(self, q, clearance=0.01):
         self.place(q)
         if self.collision() or np.any(self.points()[:, 2] < -0.05):
             return False
-        if clearance > 0:
-            if any(self.sim.checkDistance(p, o, clearance)[0] for p in self.parts for o in self.obstacles):
-                return False
+        if self.too_close(clearance):
+            return False
         return True
+
+    def random_safe_start(self, rng, sampler, goals, tolerance):
+        """Start at a new continuous safe pose sampled around the connected safe set."""
+        anchors = np.asarray(sampler["anchors"], dtype=float)
+        lower = np.asarray(sampler["lower"], dtype=float)
+        upper = np.asarray(sampler["upper"], dtype=float)
+        jitter = np.asarray(sampler["jitter"], dtype=float)
+        clearance = float(sampler["clearance"])
+        joint1_exclusion = float(sampler["joint1_exclusion_abs"])
+        goals = np.asarray(goals, dtype=float)
+        for _ in range(int(sampler["max_attempts"])):
+            anchor = anchors[int(rng.integers(len(anchors)))]
+            q = np.clip(anchor + rng.uniform(-jitter, jitter), lower, upper)
+            if abs(q[0]) < joint1_exclusion:
+                continue
+            self.stop()
+            if not self.safe_pose(q, clearance):
+                continue
+            points = self.points()
+            if any(np.all(np.linalg.norm(points - goal, axis=1) < tolerance) for goal in goals):
+                continue
+            # The candidate must connect locally to an anchor in the known
+            # collision-free component, not merely be safe at one point.
+            count = max(2, int(np.ceil(np.max(np.abs(anchor - q)) / np.deg2rad(2))) + 1)
+            if not all(self.safe_pose(p, clearance) for p in np.linspace(q, anchor, count)):
+                continue
+            try:
+                self.start_at(q, clearance)
+            except RuntimeError:
+                self.stop()
+                continue
+            return q
+        raise RuntimeError("Could not sample a safe connected random start; inspect sampler bounds/clearance")
 
     def joint_limits(self):
         lower = np.deg2rad([-110.0, -90.0])

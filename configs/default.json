@@ -14,7 +14,5 @@
   "max_grad_norm": 0.5,
   "ewc_lambda": 1000.0,
   "fisher_samples": 128,
-  "evaluation_episodes": 100,
   "task_order": ["A", "B", "C"]
 }
-
