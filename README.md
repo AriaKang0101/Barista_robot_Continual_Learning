@@ -76,6 +76,8 @@ python -m barista_cl prepare --scene /absolute/path/safety_rl_2dof.ttt
 
 CoppeliaSim GUI를 실행해 두세요. 기본 ZeroMQ 포트는 23000입니다. 명령들이 장면 로드·시작·종료·step을 제어하므로 동시에 GUI에서 조작하지 마세요. 파일 해시가 다르면 원본과 동일한 환경 조건을 위해 실행을 중단합니다.
 
+CoppeliaSim 물리 엔진을 시작할 때 고정 형상이 1 mm 미만으로 안착할 수 있습니다. 코드의 고정 작업공간 검사는 이 수치 오차를 고려해 최대 matrix element 변화 2 mm까지만 허용하며, 그보다 큰 위치·자세 변화는 중단하고 변화량을 출력합니다. 이 허용치는 기본 충돌 간격 1 cm 및 목표 허용 오차 5 cm보다 작습니다.
+
 ## 3. 목표 A/B/C 자동 생성
 
 ```bash

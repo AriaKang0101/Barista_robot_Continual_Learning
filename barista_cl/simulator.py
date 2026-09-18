@@ -27,6 +27,10 @@ PATHS = {
     "target2": "/EndTarget",
 }
 FIXED = ["base", "wall", "machine1", "machine2", "camera", "target1", "target2"]
+# CoppeliaSim's dynamics initialization can settle a nominally fixed shape by
+# less than a millimetre. Keep the guard strict enough to reject an edited or
+# dragged workcell while allowing that deterministic solver settling.
+GEOMETRY_ATOL = 2e-3
 
 
 class Simulator:
@@ -72,8 +76,13 @@ class Simulator:
         expected = self.fixed_geometry if expected is None else expected
         now = self.geometry()
         for name in FIXED:
-            if not np.allclose(now[name], expected[name], atol=1e-5, rtol=0):
-                raise RuntimeError(f"Fixed scene geometry changed: {name}. Reload the original scene.")
+            delta = float(np.max(np.abs(np.asarray(now[name]) - np.asarray(expected[name]))))
+            if delta > GEOMETRY_ATOL:
+                raise RuntimeError(
+                    f"Fixed scene geometry changed: {name} "
+                    f"(max matrix delta {delta:.6g}, allowed {GEOMETRY_ATOL:.6g}). "
+                    "Reload the original scene."
+                )
 
     def stop(self):
         if self.sim.getSimulationState() != self.sim.simulation_stopped:
@@ -166,4 +175,3 @@ class Simulator:
 
     def __exit__(self, *_):
         self.close()
-
