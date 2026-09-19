@@ -143,3 +143,19 @@ def test_original_goal_is_refined_between_coarse_grid_nodes(fake_sim):
     assert anchor in poses
     assert np.all(errors < 0.03)
     np.testing.assert_allclose(q, [0.15, 0.15], atol=0.031)
+
+
+def test_original_goal_global_fallback_searches_outside_safe_anchor_cell(fake_sim):
+    poses = {(0, 0): np.array([0.0, 0.0])}
+    graph = {(0, 0): set()}
+    fake_sim.start_at([0.0, 0.0])
+    points = {(0, 0): fake_sim.points().tolist()}
+    fake_sim.start_at([0.6, 0.6])
+    goal = fake_sim.points()
+    q, anchor, errors = refine_original_goal(
+        fake_sim, graph, poses, points, [(0, 0)], goal, 0.03,
+        np.array([0.1, 0.1]), np.array([-1.0, -1.0]), np.array([1.0, 1.0]),
+        subdivisions=5, candidate_anchors=1)
+    assert anchor == (0, 0)
+    assert np.all(errors < 0.03)
+    np.testing.assert_allclose(q, [0.6, 0.6], atol=0.026)

@@ -25,21 +25,52 @@ def refine_original_goal(sim, graph, poses, points, component, goal, tolerance, 
                for b in np.linspace(-1.0, 1.0, subdivisions)]
     offsets.sort(key=lambda delta: (float(np.dot(delta, delta)), float(delta[0]), float(delta[1])))
     best = None
+
+    def consider(q, preferred_nodes):
+        nonlocal best
+        if not sim.safe_pose(q, clearance):
+            return
+        candidate_points = sim.points()
+        errors = goal_errors(candidate_points, goal)
+        score = float(np.max(errors))
+        if best is not None and score >= best[0]:
+            return
+        # A goal candidate found outside the coarse safe grid is accepted only
+        # if a collision-free local segment joins it to that connected graph.
+        for node in preferred_nodes:
+            anchor = np.asarray(poses[node])
+            count = max(2, int(np.ceil(np.max(np.abs(anchor - q)) / np.deg2rad(2))) + 1)
+            if all(sim.safe_pose(p, clearance) for p in np.linspace(anchor, q, count)):
+                best = (score, q.copy(), node, errors.copy())
+                return
+
     for node in ranked[:min(candidate_anchors, len(ranked))]:
         anchor = np.asarray(poses[node])
         for offset in offsets:
             q = np.clip(anchor + offset, lower, upper)
-            if not sim.safe_pose(q, clearance):
-                continue
-            candidate_points = sim.points()
-            errors = goal_errors(candidate_points, goal)
-            score = float(np.max(errors))
-            if best is not None and score >= best[0]:
-                continue
-            count = max(2, int(np.ceil(np.max(np.abs(anchor - q)) / np.deg2rad(2))) + 1)
-            if not all(sim.safe_pose(p, clearance) for p in np.linspace(anchor, q, count)):
-                continue
-            best = (score, q.copy(), node, errors.copy())
+            consider(q, [node])
+
+    # The original targets sit close to the machines. Their entire coarse cell
+    # may be absent from the 1 cm-clearance graph even though a narrower,
+    # collision-free success pose exists. Exhaustively inspect the full joint
+    # range at four times the coarse resolution, then connect improvements back
+    # to the known graph. This is preparation only, never training data.
+    if best is None or not np.all(best[3] < tolerance):
+        coarse_intervals = np.maximum(1, np.rint((upper - lower) / (2.0 * jitter)).astype(int))
+        dense_counts = 4 * coarse_intervals + 1
+        dense_axes = [np.linspace(lower[i], upper[i], int(dense_counts[i])) for i in range(2)]
+        scale = upper - lower
+        for row, q1 in enumerate(dense_axes[0], start=1):
+            for q2 in dense_axes[1]:
+                q = np.asarray([q1, q2])
+                nearest = sorted(
+                    component,
+                    key=lambda n: float(np.max(np.abs((np.asarray(poses[n]) - q) / scale))))
+                consider(q, nearest[:min(candidate_anchors, len(nearest))])
+            if row == 1 or row % 8 == 0 or row == len(dense_axes[0]):
+                value = None if best is None else best[3].tolist()
+                print(f"Original Task A global refinement: {row}/{len(dense_axes[0])} rows, "
+                      f"best_errors={value}", flush=True)
     if best is None or not np.all(best[3] < tolerance):
         errors = None if best is None else best[3]
         raise RuntimeError(
