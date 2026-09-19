@@ -108,7 +108,7 @@ def prepare(scene, output, host="localhost", port=23000, seed=2026,
         jitter = np.asarray([(axis[1] - axis[0]) / 2 for axis in axes])
         task_a_q, task_a, task_a_errors = refine_original_goal(
             sim, graph, poses, points, component, original_goal, tolerance,
-            jitter, lower_array, upper_array, clearance=clearance)
+            jitter, lower_array, upper_array, clearance=0.0)
         print(f"Original Task A continuous refinement: q={task_a_q.tolist()}, "
               f"errors={task_a_errors.tolist()}", flush=True)
 
@@ -190,7 +190,9 @@ def prepare(scene, output, host="localhost", port=23000, seed=2026,
             "upstream": UPSTREAM, "upstream_commit": UPSTREAM_COMMIT,
             "runtime": sim.runtime, "fixed_geometry": sim.fixed_geometry,
             "goal_tolerance": tolerance, "max_steps": max_steps, "seed": seed,
-            "preparation": {"grid_size": grid_size, "clearance": clearance, "edge_resolution_degrees": 2},
+            "preparation": {"grid_size": grid_size, "clearance": clearance,
+                            "goal_endpoint_clearance": 0.0,
+                            "edge_resolution_degrees": 2},
             "goal_selection": {
                 "A": "original_scene_markers",
                 "B_C": "central_well_connected_safe_goals",
