@@ -1,7 +1,7 @@
 {
   "seed": 0,
   "device": "auto",
-  "timesteps_per_task": 100352,
+  "timesteps_per_task": 1024,
   "n_steps": 512,
   "batch_size": 128,
   "n_epochs": 10,

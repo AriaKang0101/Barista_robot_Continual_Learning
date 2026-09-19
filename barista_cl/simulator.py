@@ -136,6 +136,11 @@ class Simulator:
     def points(self):
         return np.asarray([self.sim.getObjectPosition(self.handles[k], -1) for k in ["j2", "ee"]])
 
+    def original_target_points(self):
+        """The two target positions used by the pinned upstream PPO task."""
+        return np.asarray([self.sim.getObjectPosition(self.handles[k], -1)
+                           for k in ["target1", "target2"]])
+
     def collision(self):
         return (any(self.sim.checkCollision(p, o)[0] for p in self.parts for o in self.obstacles)
                 or self.self_collision())

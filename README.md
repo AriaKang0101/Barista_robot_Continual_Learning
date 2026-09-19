@@ -3,7 +3,7 @@
 고정된 바리스타 로봇 작업공간에서 **Sequential PPO vs PPO-EWC**를 비교합니다.
 한 정책을 `A → B → C`로 순차 학습하고 각 단계 후 이전 작업을 다시 평가합니다.
 
-**현재 상태:** Windows CoppeliaSim 4.9.0에서 장면 연결·목표 생성·preview를 확인했습니다. schema v2의 전체 무작위 시작 pilot은 학습 중 성공과 held-out 0/30이라는 일반화 실패를 보여, 관절 고유감각과 안전 curriculum을 추가한 학습 프로토콜 v2.1을 사용합니다. 아직 A/B/C 전체 PPO-EWC 비교 결과는 없습니다.
+**현재 상태:** Windows CoppeliaSim 4.9.0에서 v2/v2.1 장면 연결·목표 생성·preview를 확인했습니다. 두 프로토콜 모두 Task A 100,352-step pilot의 held-out 성공이 0/30이었습니다. 원인을 분리하기 위해 현재 기본값은 원본 Task A와 성공 기준을 먼저 재현하는 **프로토콜 v3**입니다. 아직 v3 실제 시뮬레이터 결과와 A/B/C 전체 PPO-EWC 비교 결과는 없습니다.
 
 ## 원본 작업공간 유지
 
@@ -14,7 +14,7 @@
 
 원본 GitHub에 쓰는 코드는 없습니다. 모든 새 CL 코드는 이 저장소에 있습니다. 장면은 기존 로컬 파일을 지정하거나 `fetch-scene`으로 고정 commit에서 다운로드합니다. `.ttt`를 재작성하거나 저장하지 않으며, 원본 학습 코드·로그·모델을 복사하지 않습니다.
 
-벽, 머신, 로봇 베이스, 카메라 및 기존 Target 오브젝트 위치를 이동하지 않습니다. 목표 A/B/C는 **정책에 숫자로 입력**됩니다. 기존 Target 마커는 A/B/C를 따라 이동하지 않으므로 마커가 아니라 저장된 좌표와 실제 거리로 성공을 판정합니다.
+벽, 머신, 로봇 베이스, 카메라 및 기존 Target 오브젝트 위치를 이동하지 않습니다. v3의 Task A는 원본 `/FirstTarget`, `/EndTarget`의 실제 위치를 그대로 사용합니다. B/C는 안전 연결영역 내부에서 선택하지만 Target 오브젝트를 이동하지 않고 저장 좌표로 판정합니다. A/B/C 목표는 모두 **정책에 숫자로 입력**됩니다.
 
 **명령 실행 시 지정한 장면을 CoppeliaSim에 다시 불러옵니다.** 전용 시뮬레이터 인스턴스를 사용하고, 다른 작업 중인 장면은 먼저 저장하세요. 기본적으로 CoppeliaSim과 Python을 동일 PC에서 실행합니다. 원격 서버 사용 시 `--scene` 절대경로가 서버에서도 동일하게 존재해야 합니다.
 
@@ -23,8 +23,8 @@
 | 항목 | 구현 |
 |---|---|
 | 작업공간 | 원본 2-DoF 바리스타 장면 |
-| Task | 서로 다른 관절 자세에서 계산한 joint2/끝단 목표 위치쌍 A/B/C |
-| 관측 | 84×84 grayscale 영상 4프레임(CHW) + 목표 좌표 6개 + 정규화 관절각 2개 |
+| Task | A=원본 marker 위치쌍, B/C=중앙의 잘 연결된 안전 위치쌍 |
+| 관측(v3 기본) | 84×84 grayscale 영상 4프레임(CHW) + 목표 좌표 6개 |
 | 목표 좌표 | 베이스 위치에 대한 병진 오프셋, world 축 방향 |
 | 행동 | 두 관절의 속도, 각각 최대 절댓값 0.8 rad/s |
 | 보상 | 두 목표까지 거리 감소 합 ×10, 성공 +100, 충돌 −20 |
@@ -35,7 +35,9 @@
 
 목표 A/B/C는 **위치쌍 도달 과제**입니다. 컵 파지, 음료 제조, 액체, 독립적인 6D pose 제어는 구현하지 않습니다. 자동 목표에 임의의 픽업/추출/제공 의미를 붙이지 않습니다. 충돌률은 측정하지만 안전 보장이나 PPO-Lagrangian을 구현한 것은 아닙니다.
 
-원본 대비 목표 입력, task 전환, 안전 무작위 초기화, 난수 처리, 프레임 초기화와 평가 체계가 추가됩니다. 학습은 매 episode마다 연결된 안전 관절공간에서 새로운 연속 자세를 생성합니다. 평가는 별도 seed로 생성·저장한 다양한 held-out 자세를 모든 방법과 seed가 공유합니다. 기본 허용 오차 0.05 m는 원본의 0.15 m와 다릅니다.
+원본 대비 목표 입력, task 전환, 안전 무작위 초기화, 난수 처리, 프레임 초기화와 평가 체계가 추가됩니다. 따라서 완전히 동일한 원본 재현이 아니라 **CL을 위한 원본 근접 기준선**입니다. 학습은 매 episode마다 연결된 안전 관절공간에서 새로운 연속 자세를 생성합니다. 평가는 별도 seed로 생성·저장한 다양한 held-out 자세를 모든 방법과 seed가 공유합니다. v3 기본 성공 허용 오차 0.15 m는 원본과 같습니다.
+
+v2는 자동으로 가장 멀리 떨어진 목표와 0.05 m 기준을 사용했고, v2.1은 여기에 관절각과 시작점 curriculum을 추가했습니다. 이 변화들이 동시에 섞이면 실패 원인을 알기 어렵습니다. v3에서는 먼저 원본 Task A, 0.15 m, task별 `3e-4 → 5e-5` 선형 학습률 감소, 전체 안전 시작분포를 사용합니다. 관절각과 curriculum은 삭제하지 않고 설정 기반 ablation으로 남겨 둡니다.
 
 ## 1. 설치와 사양 확인
 
@@ -71,17 +73,17 @@ python -m barista_cl fetch-scene
 `scenes/safety_rl_2dof.ttt`에 원본을 다운로드하고 해시를 검증합니다. 기존 파일이 다르면 덮어쓰지 않습니다. 이미 가진 원본 파일을 쓰려면 이후 명령의 `--scene`에 경로를 전달하세요.
 
 ```bash
-python -m barista_cl prepare --scene /absolute/path/safety_rl_2dof.ttt --output artifacts/tasks_v2.json
+python -m barista_cl prepare --scene /absolute/path/safety_rl_2dof.ttt --output artifacts/tasks_v3.json
 ```
 
 CoppeliaSim GUI를 실행해 두세요. 기본 ZeroMQ 포트는 23000입니다. 명령들이 장면 로드·시작·종료·step을 제어하므로 동시에 GUI에서 조작하지 마세요. 파일 해시가 다르면 원본과 동일한 환경 조건을 위해 실행을 중단합니다.
 
-CoppeliaSim 물리 엔진을 시작할 때 고정 형상이 1 mm 미만으로 안착할 수 있습니다. 코드의 고정 작업공간 검사는 이 수치 오차를 고려해 최대 matrix element 변화 2 mm까지만 허용하며, 그보다 큰 위치·자세 변화는 중단하고 변화량을 출력합니다. 이 허용치는 기본 충돌 간격 1 cm 및 목표 허용 오차 5 cm보다 작습니다.
+CoppeliaSim 물리 엔진을 시작할 때 고정 형상이 1 mm 미만으로 안착할 수 있습니다. 코드의 고정 작업공간 검사는 이 수치 오차를 고려해 최대 matrix element 변화 2 mm까지만 허용하며, 그보다 큰 위치·자세 변화는 중단하고 변화량을 출력합니다. 이 허용치는 기본 충돌 간격 1 cm 및 목표 허용 오차 15 cm보다 작습니다.
 
 ## 3. 목표 A/B/C 자동 생성
 
 ```bash
-python -m barista_cl prepare --output artifacts/tasks_v2.json
+python -m barista_cl prepare --output artifacts/tasks_v3.json
 ```
 
 실제 장면에서 다음을 수행합니다.
@@ -89,23 +91,23 @@ python -m barista_cl prepare --output artifacts/tasks_v2.json
 1. 원본 관절 한계와 탐색 범위(joint1 −110~110°, joint2 −90~90°)의 교집합을 샘플링합니다.
 2. 링크와 벽/머신의 충돌 및 기본 1 cm 간격을 검사합니다.
 3. 인접 자세 사이를 최대 2° 간격으로 검사해 연결 그래프를 만듭니다.
-4. 가장 큰 연결 영역에서 성공 영역이 겹치지 않는 목표 A/B/C를 선택합니다.
-5. 실제 joint2와 끝단 좌표를 한 쌍으로 기록합니다. 좌표를 독립적으로 임의 생성하지 않습니다.
+4. Task A는 원본 `/FirstTarget`, `/EndTarget` 좌표를 사용하고, 그 성공영역 안의 안전 grid 자세를 경로 종점으로 찾습니다.
+5. B/C는 가장 큰 연결 영역의 중앙에 가깝고 graph 연결도가 높은 자세 중 서로 성공영역이 겹치지 않게 선택합니다. 좌표를 독립적으로 임의 생성하지 않습니다.
 6. 가장 큰 안전 연결영역 전체를 학습 난수 sampler의 anchor로 저장합니다. 학습 reset마다 anchor 주변의 새로운 연속 관절각을 만들고 충돌·1 cm 거리·비인접 자기충돌·목표 중복을 검사합니다.
 7. 기본 30개의 서로 다른 평가 자세를 별도 난수로 생성합니다. 각 자세는 안전 연결영역에 이어져야 하며 A/B/C 모두에 대해 실제 물리 step 경로검증을 통과해야 합니다.
-8. 물리 시작 후에도 충돌·안전거리를 다시 검사합니다. 모든 조건을 통과한 경우에만 schema v2 task 파일을 저장합니다.
+8. 물리 시작 후에도 충돌·안전거리를 다시 검사합니다. 모든 조건을 통과한 경우에만 schema v3 task 파일을 저장합니다.
 
-Remote API 호출이 많아 시간이 걸릴 수 있으며 진행 상황이 출력됩니다. v1 파일과 호환되지 않으므로 기존 `artifacts/tasks.json`은 보존하고 `artifacts/tasks_v2.json`처럼 새 `--output`을 지정하세요.
+Remote API 호출이 많아 시간이 걸릴 수 있으며 진행 상황이 출력됩니다. 기존 v2/v2.1 파일과 결과는 보존하고 새 `artifacts/tasks_v3.json`을 만드세요.
 
 ```bash
-python -m barista_cl prepare --grid-size 21 --tolerance 0.05 --eval-starts 50 --output artifacts/tasks_v2_50eval.json
+python -m barista_cl prepare --grid-size 21 --tolerance 0.15 --eval-starts 50 --output artifacts/tasks_v3_50eval.json
 ```
 
 실패하면 유효한 목표를 꾸며서 채우지 않고 중단합니다. 출력된 경로 timeout·충돌 등을 확인하세요. `--max-steps`, `--clearance`를 바꾸면 프로토콜이 바뀝니다. 두 방법에 같은 준비 파일을 사용해야 합니다.
 
 학습 초기화는 Gymnasium seed로 재현 가능하지만 매 episode 새 연속 자세를 생성하므로 두 방법이 정확히 같은 순서의 자세를 경험한다고 보장하지 않습니다. 대신 동일한 안전 분포에서 학습합니다. 평가는 저장된 held-out 자세를 각각 정확히 한 번 사용하므로 모든 방법·seed의 비교 조건이 같습니다. 검사는 지정된 충돌 쌍과 이산 시간/각도 샘플에 대한 것이며 모든 연속 경로의 절대적 안전을 보장하지 않습니다.
 
-학습 프로토콜 v2.1은 각 task 목표와 가까운 안전 anchor 15%에서 시작해 해당 task 예산의 70% 시점까지 전체 연결 안전공간으로 선형 확장합니다. 이후 남은 30%는 전체 공간에서 학습합니다. 이는 학습 시작 분포만 조절하며, 최종 평가는 curriculum과 무관하게 저장된 held-out 자세 전체를 사용합니다. 관절각은 encoder로 측정 가능한 고유감각이며 목표 경로나 정답 행동을 제공하지 않습니다.
+v3 기본값은 curriculum 없이 처음부터 전체 안전 연결영역에서 학습하며 관절각을 정책에 입력하지 않습니다. `observation_mode=image_goal_joints`와 v2.1의 curriculum 값은 이후 ablation에서만 사용하세요. 어떤 경우에도 최종 평가는 저장된 held-out 자세 전체를 사용합니다.
 
 검증 제어기의 움직임 확인:
 
@@ -119,12 +121,18 @@ python -m barista_cl preview --task C
 
 ## 4. 단일 Task 예비 학습
 
-각 task가 PPO로 학습 가능한지 먼저 확인하세요. 아래는 각각 새로운 모델을 학습합니다.
+먼저 1,024 step smoke test로 실행 연결만 확인한 뒤, 원본 Task A 전체 pilot을 실행합니다.
 
 ```bash
-python -m barista_cl train --method sequential --only-task A --output runs/pilot_A
-python -m barista_cl train --method sequential --only-task B --output runs/pilot_B
-python -m barista_cl train --method sequential --only-task C --output runs/pilot_C
+python -m barista_cl train --method sequential --only-task A --config configs/smoke_v3.json --output runs/v3_smoke_A
+python -m barista_cl train --method sequential --only-task A --output runs/v3_pilot_A
+```
+
+Task A가 held-out 시작점에서도 학습된 것을 확인한 뒤 B/C를 각각 새 모델로 확인합니다.
+
+```bash
+python -m barista_cl train --method sequential --only-task B --output runs/v3_pilot_B
+python -m barista_cl train --method sequential --only-task C --output runs/v3_pilot_C
 ```
 
 처음부터 배우지 못한 작업의 낮은 성능을 ‘망각’으로 해석하면 안 됩니다. 준비 제어기의 성공은 물리적 도달 가능성 검사이며 PPO의 학습 가능성과 별도입니다.
@@ -161,11 +169,12 @@ Task 전환 시 모델과 optimizer를 새로 생성하지 않습니다. Task �
 |---|---:|---|
 | timesteps_per_task | 100352 | 512의 배수인 정확한 rollout 예산 |
 | n_steps / batch_size / n_epochs | 512 / 128 / 10 | PPO 업데이트 |
-| learning_rate | 0.0003 | 모든 task에 동일 상수 |
+| learning_rate_start / end | 0.0003 / 0.00005 | 각 task에서 다시 시작하는 선형 감소 |
 | ewc_lambda | 1000 | 탐색 시작값이며 최적값 아님 |
 | fisher_samples | 128 | 마지막 현재-task rollout의 상태 표본 수 |
-| curriculum_initial_fraction | 0.15 | 처음 사용하는 목표 인접 안전 anchor 비율 |
-| curriculum_full_fraction | 0.7 | task 예산 중 전체 안전공간에 도달하는 시점 |
+| curriculum_initial_fraction | 1.0 | 처음부터 전체 안전 anchor 사용 |
+| curriculum_full_fraction | 1.0 | curriculum 비활성화 |
+| observation_mode | image_goal | 관절각을 제외한 v3 기준 관측 |
 | task_order | A, B, C | 작업 순서 |
 
 lambda는 Fisher 크기와 네트워크에 의존합니다. 10/100/1000 같은 후보를 별도 예비 검증에서 비교하고, 최종 평가 초기 자세로 값을 고르지 마세요. 망각이 거의 발생하지 않는 것도 결과입니다. EWC 효과를 보이기 위해 불리한 작업 순서만 선택하지 마세요.
@@ -233,7 +242,7 @@ tensorboard --logdir runs
 
 테스트는 lambda=0 PPO 일치, Gaussian Fisher sanity check, EWC gradient 동치성, 중요도 누적, 체크포인트 재로딩, RNG 보존, 충돌 우선 처리, 목표 생성 실패 차단, 모의 영상 환경에서 두 방법×3단계 실행 및 그래프 생성을 포함합니다.
 
-**개발 환경에 CoppeliaSim이 없어 실제 `.ttt` 실행, 물리 제어 적합성, 목표 생성 성공, 실제 PPO 수렴은 검증하지 않았습니다.** 첫 실제 실행은 `prepare → preview → 단일 task pilot → 순차 비교` 순서입니다.
+**개발 환경에서는 CoppeliaSim v3 준비·학습을 직접 실행하지 못했습니다.** 실제 장면에서 먼저 `prepare → preview A/B/C → v3 smoke A → v3 full pilot A` 순서로 검증해야 합니다. Task A가 학습되지 않으면 B/C 또는 CL 비교로 넘어가지 마세요.
 
 - 연결 timeout: CoppeliaSim 실행, ZeroMQ 포트 23000, host/port를 확인하세요.
 - 해시 불일치: 저장 후 변경된 장면일 수 있습니다. 원본 사본을 별도 경로에 받으세요.

@@ -27,12 +27,13 @@ def drive_route(sim, waypoints, goal, tolerance, max_steps, clearance=0.0):
 
 
 def prepare(scene, output, host="localhost", port=23000, seed=2026,
-            grid_size=17, tolerance=0.05, clearance=0.01,
+            grid_size=17, tolerance=0.15, clearance=0.01,
             eval_starts=30, max_steps=500):
     if grid_size < 5 or tolerance <= 0 or clearance < 0 or min(eval_starts, max_steps) < 1:
         raise ValueError("Invalid preparation parameters")
     rng = np.random.default_rng(seed)
     with Simulator(scene, host, port) as sim:
+        original_goal = sim.original_target_points()
         lower, upper = sim.joint_limits()
         axes = [np.linspace(lower[i], upper[i], grid_size) for i in range(2)]
         poses, points = {}, {}
@@ -58,14 +59,38 @@ def prepare(scene, output, host="localhost", port=23000, seed=2026,
         component = largest_component(graph)
         if len(component) < 6:
             raise RuntimeError("The connected safe component is too small; inspect clearance/grid parameters.")
-        # Deterministic farthest-point goal selection within one connected component.
+        # Task A is the exact target pair used by the pinned upstream PPO scene.
+        # Its q is only a collision-free route endpoint/reference; success is
+        # always measured against the untouched FirstTarget/EndTarget markers.
         center = np.mean([np.ravel(points[n]) for n in component], axis=0)
-        selected = [max(component, key=lambda n: np.linalg.norm(np.ravel(points[n]) - center))]
-        while len(selected) < 3:
-            nxt = max(component, key=lambda n: min(goal_separation(points[n], points[g]) for g in selected))
-            if min(goal_separation(points[nxt], points[g]) for g in selected) <= 2.2 * tolerance:
-                raise RuntimeError("Three distinct success regions do not fit; inspect the robot scale and reduce tolerance appropriately")
-            selected.append(nxt)
+        task_a = min(component, key=lambda n: float(np.max(goal_errors(points[n], original_goal))))
+        if not reached(points[task_a], original_goal, tolerance):
+            error = goal_errors(points[task_a], original_goal)
+            raise RuntimeError(f"Original target markers are not reachable on the sampled safe grid: errors={error}")
+
+        # B/C are central, well-connected safe goals rather than the extreme
+        # farthest-point goals used by v2. This avoids confounding continual
+        # learning with three unnecessarily hard boundary-reaching problems.
+        span = np.asarray(upper) - np.asarray(lower)
+        margin = 0.5 / (grid_size - 1)
+        interior = [n for n in component
+                    if len(graph[n]) >= 3
+                    and np.min(np.minimum((poses[n] - lower) / span,
+                                          (upper - poses[n]) / span)) >= margin]
+        candidates = sorted(interior or component,
+                            key=lambda n: (np.linalg.norm(np.ravel(points[n]) - center), n))
+        selected = [task_a]
+        task_points = [original_goal.tolist()]
+        for node in candidates:
+            if node in selected:
+                continue
+            if all(goal_separation(points[node], goal) > 2.2 * tolerance for goal in task_points):
+                selected.append(node)
+                task_points.append(points[node])
+            if len(selected) == 3:
+                break
+        if len(selected) != 3:
+            raise RuntimeError("Three distinct interior success regions do not fit; inspect grid/tolerance parameters")
         lower_array, upper_array = np.asarray(lower), np.asarray(upper)
         jitter = np.asarray([(axis[1] - axis[0]) / 2 for axis in axes])
         anchors = np.asarray([poses[n] for n in component])
@@ -93,7 +118,7 @@ def prepare(scene, output, host="localhost", port=23000, seed=2026,
             if not sim.safe_pose(q, clearance):
                 continue
             candidate_points = sim.points()
-            if any(reached(candidate_points, points[g], tolerance) for g in selected):
+            if any(reached(candidate_points, goal, tolerance) for goal in task_points):
                 continue
             count = max(2, int(np.ceil(np.max(np.abs(anchor - q)) / np.deg2rad(2))) + 1)
             if not all(sim.safe_pose(p, clearance) for p in np.linspace(q, anchor, count)):
@@ -101,10 +126,10 @@ def prepare(scene, output, host="localhost", port=23000, seed=2026,
             if any(np.max(np.abs(q - prior)) < 1e-6 for prior in accepted):
                 continue
             checks = []
-            for label, goal in zip("ABC", selected):
-                path = route(graph, node, goal)
+            for label, goal_node, goal_points in zip("ABC", selected, task_points):
+                path = route(graph, node, goal_node)
                 waypoints = np.vstack([q, [poses[n] for n in path]])
-                ok, steps, reason = drive_route(sim, waypoints, points[goal], tolerance, max_steps, clearance)
+                ok, steps, reason = drive_route(sim, waypoints, goal_points, tolerance, max_steps, clearance)
                 checks.append({"task": label, "passed": ok, "steps": steps, "reason": reason})
                 sim.stop()
                 if not ok:
@@ -118,12 +143,17 @@ def prepare(scene, output, host="localhost", port=23000, seed=2026,
             raise RuntimeError("Insufficient dynamically validated evaluation starts. No task file was written.")
         sim.assert_geometry()
         data = {
-            "schema_version": 2, "scene_blob": SCENE_BLOB,
+            "schema_version": 3, "scene_blob": SCENE_BLOB,
             "upstream": UPSTREAM, "upstream_commit": UPSTREAM_COMMIT,
             "runtime": sim.runtime, "fixed_geometry": sim.fixed_geometry,
             "goal_tolerance": tolerance, "max_steps": max_steps, "seed": seed,
             "preparation": {"grid_size": grid_size, "clearance": clearance, "edge_resolution_degrees": 2},
-            "tasks": [{"id": label, "q": poses[n].tolist(), "points": points[n]} for label, n in zip("ABC", selected)],
+            "goal_selection": {
+                "A": "original_scene_markers",
+                "B_C": "central_well_connected_safe_goals",
+            },
+            "tasks": [{"id": label, "q": poses[n].tolist(), "points": np.asarray(goal).tolist()}
+                      for label, n, goal in zip("ABC", selected, task_points)],
             "training_sampler": sampler,
             "eval_starts": [q.tolist() for q in accepted],
             "dynamic_validation": {"all_passed": True, "evaluation_attempts": validation},
@@ -133,4 +163,4 @@ def prepare(scene, output, host="localhost", port=23000, seed=2026,
         }
         validate_tasks(data)
         write_json(output, data)
-        print(f"Prepared A/B/C, continuous safe training sampler, and {eval_starts} held-out starts: {output}", flush=True)
+        print(f"Prepared protocol v3: original Task A, interior B/C, and {eval_starts} held-out starts: {output}", flush=True)

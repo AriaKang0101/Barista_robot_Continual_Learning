@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 from gymnasium.utils.env_checker import check_env
 
-from barista_cl.core import continual_metrics, largest_component, reached, route, validate_tasks
+from barista_cl.core import continual_metrics, largest_component, load_config, reached, route, validate_tasks, write_json
 from barista_cl.env import BaristaEnv
 
 
@@ -86,3 +86,38 @@ def test_timeout_and_task_switch(fake_sim, task_data):
     env.set_task("B")
     obs_b, _ = env.reset(seed=0)
     assert not np.array_equal(obs_a["goal"], obs_b["goal"])
+
+
+def test_image_goal_mode_omits_joint_ablation(fake_sim, task_data):
+    env = BaristaEnv(fake_sim, task_data, observation_mode="image_goal")
+    obs, _ = env.reset(seed=0)
+    assert set(obs) == {"image", "goal"}
+
+
+def test_v2_constant_learning_rate_config_is_backward_compatible(tmp_path):
+    config = {
+        "seed": 0, "device": "cpu", "timesteps_per_task": 8,
+        "n_steps": 8, "batch_size": 4, "n_epochs": 1,
+        "learning_rate": 0.0003, "gamma": 0.99, "gae_lambda": 0.95,
+        "clip_range": 0.2, "ent_coef": 0.01, "vf_coef": 0.5,
+        "max_grad_norm": 0.5, "ewc_lambda": 1.0, "fisher_samples": 4,
+        "curriculum_initial_fraction": 1.0, "curriculum_full_fraction": 1.0,
+        "task_order": ["A", "B", "C"],
+    }
+    path = tmp_path / "config.json"
+    write_json(path, config)
+    loaded = load_config(path)
+    assert loaded["learning_rate_start"] == loaded["learning_rate_end"] == 0.0003
+    assert loaded["observation_mode"] == "image_goal_joints"
+
+
+def test_per_task_linear_schedule_restarts():
+    from barista_cl.experiment import PerTaskLinearSchedule
+    schedule = PerTaskLinearSchedule(3e-4, 5e-5)
+    assert schedule(None) == pytest.approx(3e-4)
+    schedule.progress_remaining = 0.5
+    assert schedule(None) == pytest.approx(1.75e-4)
+    schedule.progress_remaining = 0.0
+    assert schedule(None) == pytest.approx(5e-5)
+    schedule.reset()
+    assert schedule(None) == pytest.approx(3e-4)

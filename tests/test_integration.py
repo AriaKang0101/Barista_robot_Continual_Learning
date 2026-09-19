@@ -16,6 +16,9 @@ def test_automatic_goal_preparation(monkeypatch, tmp_path):
     module.prepare("unused.ttt", path, grid_size=7, eval_starts=3)
     tasks = read_json(path)
     validate_tasks(tasks)
+    assert tasks["schema_version"] == 3
+    assert tasks["goal_selection"]["A"] == "original_scene_markers"
+    np.testing.assert_allclose(tasks["tasks"][0]["points"], FakeSimulator().original_target_points())
     assert len(tasks["tasks"]) == 3
     assert len(tasks["eval_starts"]) == 3
     assert len(tasks["training_sampler"]["anchors"]) >= 3

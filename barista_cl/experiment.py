@@ -22,15 +22,17 @@ from .simulator import Simulator
 
 class EpisodeLog(BaseCallback):
     def __init__(self, path, stage, task, env, stage_start, budget,
-                 initial_fraction, full_fraction):
+                 initial_fraction, full_fraction, learning_rate_schedule):
         super().__init__()
         self.path, self.stage, self.task = Path(path), stage, task
         self.env, self.stage_start, self.budget = env, stage_start, budget
         self.initial_fraction, self.full_fraction = initial_fraction, full_fraction
+        self.learning_rate_schedule = learning_rate_schedule
 
     def _on_step(self):
         progress = min(1.0, max(0.0, (self.model.num_timesteps - self.stage_start) / self.budget))
         expansion = min(1.0, progress / self.full_fraction)
+        self.learning_rate_schedule.progress_remaining = 1.0 - progress
         self.env.set_curriculum_fraction(
             self.initial_fraction + (1.0 - self.initial_fraction) * expansion)
         info = self.locals["infos"][0]
@@ -42,6 +44,25 @@ class EpisodeLog(BaseCallback):
                 "reason": info["done_reason"],
             })
         return True
+
+
+class PerTaskLinearSchedule:
+    """Linear LR decay that restarts at each task boundary.
+
+    SB3's normal progress value spans repeated ``learn`` calls in a way that
+    would make the rate jump between continual-learning stages. The callback
+    explicitly supplies progress within the current, equal-budget task.
+    """
+    def __init__(self, start, end):
+        self.start = float(start)
+        self.end = float(end)
+        self.progress_remaining = 1.0
+
+    def reset(self):
+        self.progress_remaining = 1.0
+
+    def __call__(self, _):
+        return self.end + (self.start - self.end) * self.progress_remaining
 
 
 def append_csv(path, row):
@@ -132,20 +153,24 @@ def run(scene, tasks_path, config_path, output, method, seed=None, device=None,
     start_time = time.monotonic()
     try:
         with Simulator(scene, host, port) as sim:
-            train_env = BaristaEnv(sim, tasks, "train")
-            eval_env = BaristaEnv(sim, tasks, "eval")
+            train_env = BaristaEnv(sim, tasks, "train", config["observation_mode"])
+            eval_env = BaristaEnv(sim, tasks, "eval", config["observation_mode"])
             vector = DummyVecEnv([lambda: Monitor(train_env)])
-            args = {k: config[k] for k in ["n_steps", "batch_size", "n_epochs", "learning_rate", "gamma",
+            learning_rate = PerTaskLinearSchedule(config["learning_rate_start"],
+                                                  config["learning_rate_end"])
+            args = {k: config[k] for k in ["n_steps", "batch_size", "n_epochs", "gamma",
                                             "gae_lambda", "clip_range", "ent_coef", "vf_coef", "max_grad_norm"]}
             model = EWCPPO("MultiInputPolicy", vector,
                            ewc_lambda=config["ewc_lambda"] if method == "ewc" else 0.0,
                            policy_kwargs={"net_arch": {"pi": [64, 64], "vf": [64, 64]}},
                            seed=seed, device=config["device"], verbose=1,
-                           tensorboard_log=str(output / "tensorboard"), **args)
+                           tensorboard_log=str(output / "tensorboard"),
+                           learning_rate=learning_rate, **args)
             manifest["resolved_device"] = str(model.device)
             for stage, task in enumerate(order, start=1):
                 train_env.set_task(task)
                 train_env.set_curriculum_fraction(config["curriculum_initial_fraction"])
+                learning_rate.reset()
                 # Evaluation shares the simulator, so never reuse an old rollout
                 # observation. set_env(force_reset=True) resets frame/episode state.
                 model.set_env(vector, force_reset=True)
@@ -154,7 +179,7 @@ def run(scene, tasks_path, config_path, output, method, seed=None, device=None,
                 callback = EpisodeLog(
                     output / "training_episodes.csv", stage, task, train_env, begin,
                     config["timesteps_per_task"], config["curriculum_initial_fraction"],
-                    config["curriculum_full_fraction"])
+                    config["curriculum_full_fraction"], learning_rate)
                 model.learn(total_timesteps=config["timesteps_per_task"], reset_num_timesteps=False,
                             tb_log_name=method, callback=callback)
                 assert model.num_timesteps - begin == config["timesteps_per_task"]

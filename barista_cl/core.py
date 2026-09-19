@@ -86,7 +86,7 @@ def route(graph, source, target):
 
 
 def validate_tasks(data):
-    if data.get("schema_version") != 2 or data.get("scene_blob") != SCENE_BLOB:
+    if data.get("schema_version") not in (2, 3) or data.get("scene_blob") != SCENE_BLOB:
         raise ValueError("Tasks must be prepared from the pinned original scene")
     tasks = data.get("tasks", [])
     if len(tasks) != 3 or {t["id"] for t in tasks} != {"A", "B", "C"}:
@@ -156,6 +156,12 @@ def continual_metrics(matrix):
 
 def load_config(path):
     cfg = read_json(path)
+    # v2 configurations used one constant learning rate. Keep them runnable,
+    # while v3 can reproduce the upstream per-task linear schedule.
+    if "learning_rate_start" not in cfg and "learning_rate" in cfg:
+        cfg["learning_rate_start"] = cfg["learning_rate"]
+    if "learning_rate_end" not in cfg and "learning_rate" in cfg:
+        cfg["learning_rate_end"] = cfg["learning_rate"]
     for name in ["timesteps_per_task", "n_steps", "batch_size", "n_epochs", "fisher_samples"]:
         if not isinstance(cfg[name], int) or cfg[name] <= 0:
             raise ValueError(f"{name} must be a positive integer")
@@ -167,6 +173,14 @@ def load_config(path):
         raise ValueError("fisher_samples cannot exceed the final rollout size")
     if cfg["ewc_lambda"] < 0 or not np.isfinite(cfg["ewc_lambda"]):
         raise ValueError("ewc_lambda must be finite and nonnegative")
+    for name in ["learning_rate_start", "learning_rate_end"]:
+        if not isinstance(cfg.get(name), (int, float)) or not np.isfinite(cfg[name]) or cfg[name] <= 0:
+            raise ValueError(f"{name} must be finite and positive")
+    if cfg["learning_rate_end"] > cfg["learning_rate_start"]:
+        raise ValueError("learning_rate_end cannot exceed learning_rate_start")
+    mode = cfg.setdefault("observation_mode", "image_goal_joints")
+    if mode not in ("image_goal", "image_goal_joints"):
+        raise ValueError("observation_mode must be image_goal or image_goal_joints")
     initial = cfg.get("curriculum_initial_fraction")
     full = cfg.get("curriculum_full_fraction")
     if not isinstance(initial, (int, float)) or not 0 < initial <= 1:

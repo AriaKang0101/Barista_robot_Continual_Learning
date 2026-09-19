@@ -11,7 +11,7 @@ from .core import goal_errors, reached, validate_tasks
 class BaristaEnv(gym.Env):
     metadata = {"render_modes": ["rgb_array"]}
 
-    def __init__(self, simulator, tasks, split="train"):
+    def __init__(self, simulator, tasks, split="train", observation_mode="image_goal_joints"):
         super().__init__()
         validate_tasks(tasks)
         if split not in ("train", "eval"):
@@ -21,6 +21,9 @@ class BaristaEnv(gym.Env):
         self.tasks = {t["id"]: t for t in tasks["tasks"]}
         self.starts = np.asarray(tasks["eval_starts"], dtype=float) if split == "eval" else None
         self.split = split
+        if observation_mode not in ("image_goal", "image_goal_joints"):
+            raise ValueError("Invalid observation_mode")
+        self.observation_mode = observation_mode
         self.tolerance = tasks["goal_tolerance"]
         self.max_steps = tasks["max_steps"]
         sampler = tasks["training_sampler"]
@@ -31,11 +34,13 @@ class BaristaEnv(gym.Env):
         self.frames = deque(maxlen=4)
         self.action_space = spaces.Box(-1.0, 1.0, (2,), np.float32)
         # Stack only images, NOT goal coordinates. Image order is explicitly CHW.
-        self.observation_space = spaces.Dict({
+        observations = {
             "image": spaces.Box(0, 255, (4, 84, 84), np.uint8),
             "goal": spaces.Box(-np.inf, np.inf, (6,), np.float32),
-            "joints": spaces.Box(-1.0, 1.0, (2,), np.float32),
-        })
+        }
+        if observation_mode == "image_goal_joints":
+            observations["joints"] = spaces.Box(-1.0, 1.0, (2,), np.float32)
+        self.observation_space = spaces.Dict(observations)
         self.base_position = np.asarray(tasks["fixed_geometry"]["base"]).reshape(3, 4)[:, 3]
         self.sim.assert_geometry(tasks["fixed_geometry"])
         if self.sim.runtime != tasks["runtime"]:
@@ -60,9 +65,11 @@ class BaristaEnv(gym.Env):
     def observation(self):
         q = self.sim.joint_positions().astype(np.float32)
         normalized_q = 2.0 * (q - self.joint_lower) / (self.joint_upper - self.joint_lower) - 1.0
-        return {"image": np.stack(self.frames),
-                "goal": (self.goal - self.base_position).astype(np.float32).ravel(),
-                "joints": np.clip(normalized_q, -1.0, 1.0).astype(np.float32)}
+        observation = {"image": np.stack(self.frames),
+                       "goal": (self.goal - self.base_position).astype(np.float32).ravel()}
+        if self.observation_mode == "image_goal_joints":
+            observation["joints"] = np.clip(normalized_q, -1.0, 1.0).astype(np.float32)
+        return observation
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)

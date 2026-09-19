@@ -26,6 +26,13 @@ class FakeSimulator:
         return np.array([[np.cos(q1), np.sin(q1), 0.2],
                          [np.cos(q1) + np.cos(q1 + q2), np.sin(q1) + np.sin(q1 + q2), 0.2]])
 
+    def original_target_points(self):
+        # Exactly represented by the coarse 5x5 and 7x7 preparation grids.
+        q1, q2 = 0.0, 0.0
+        return np.array([[np.cos(q1), np.sin(q1), 0.2],
+                         [np.cos(q1) + np.cos(q1 + q2),
+                          np.sin(q1) + np.sin(q1 + q2), 0.2]])
+
     def start_at(self, q, clearance=0.0):
         self.q = np.array(q, dtype=float)
 
