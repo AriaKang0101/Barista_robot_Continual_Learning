@@ -8,6 +8,47 @@ from .core import (SCENE_BLOB, UPSTREAM, UPSTREAM_COMMIT, goal_errors,
 from .simulator import Simulator
 
 
+def refine_original_goal(sim, graph, poses, points, component, goal, tolerance, jitter,
+                         lower, upper, subdivisions=21, candidate_anchors=8,
+                         clearance=0.0):
+    """Find a continuous safe q for the original markers between coarse grid nodes.
+
+    A 17x17 grid is sufficient for connectivity, but a long second link can move
+    more than the 0.15 m success radius between adjacent samples. Refine around
+    the most promising connected anchors instead of incorrectly declaring the
+    original task unreachable from the coarse samples alone.
+    """
+    ranked = sorted(component,
+                    key=lambda n: float(np.max(goal_errors(points[n], goal))))
+    offsets = [np.asarray([a, b]) * jitter
+               for a in np.linspace(-1.0, 1.0, subdivisions)
+               for b in np.linspace(-1.0, 1.0, subdivisions)]
+    offsets.sort(key=lambda delta: (float(np.dot(delta, delta)), float(delta[0]), float(delta[1])))
+    best = None
+    for node in ranked[:min(candidate_anchors, len(ranked))]:
+        anchor = np.asarray(poses[node])
+        for offset in offsets:
+            q = np.clip(anchor + offset, lower, upper)
+            if not sim.safe_pose(q, clearance):
+                continue
+            candidate_points = sim.points()
+            errors = goal_errors(candidate_points, goal)
+            score = float(np.max(errors))
+            if best is not None and score >= best[0]:
+                continue
+            count = max(2, int(np.ceil(np.max(np.abs(anchor - q)) / np.deg2rad(2))) + 1)
+            if not all(sim.safe_pose(p, clearance) for p in np.linspace(anchor, q, count)):
+                continue
+            best = (score, q.copy(), node, errors.copy())
+    if best is None or not np.all(best[3] < tolerance):
+        errors = None if best is None else best[3]
+        raise RuntimeError(
+            "Original target markers are not reachable after continuous safe refinement: "
+            f"best_errors={errors}. Do not change tolerance; inspect the scene/target geometry."
+        )
+    return best[1], best[2], best[3]
+
+
 def drive_route(sim, waypoints, goal, tolerance, max_steps, clearance=0.0):
     """A validation controller, never a PPO demonstration or training signal."""
     sim.start_at(waypoints[0], clearance)
@@ -63,10 +104,13 @@ def prepare(scene, output, host="localhost", port=23000, seed=2026,
         # Its q is only a collision-free route endpoint/reference; success is
         # always measured against the untouched FirstTarget/EndTarget markers.
         center = np.mean([np.ravel(points[n]) for n in component], axis=0)
-        task_a = min(component, key=lambda n: float(np.max(goal_errors(points[n], original_goal))))
-        if not reached(points[task_a], original_goal, tolerance):
-            error = goal_errors(points[task_a], original_goal)
-            raise RuntimeError(f"Original target markers are not reachable on the sampled safe grid: errors={error}")
+        lower_array, upper_array = np.asarray(lower), np.asarray(upper)
+        jitter = np.asarray([(axis[1] - axis[0]) / 2 for axis in axes])
+        task_a_q, task_a, task_a_errors = refine_original_goal(
+            sim, graph, poses, points, component, original_goal, tolerance,
+            jitter, lower_array, upper_array, clearance=clearance)
+        print(f"Original Task A continuous refinement: q={task_a_q.tolist()}, "
+              f"errors={task_a_errors.tolist()}", flush=True)
 
         # B/C are central, well-connected safe goals rather than the extreme
         # farthest-point goals used by v2. This avoids confounding continual
@@ -91,8 +135,7 @@ def prepare(scene, output, host="localhost", port=23000, seed=2026,
                 break
         if len(selected) != 3:
             raise RuntimeError("Three distinct interior success regions do not fit; inspect grid/tolerance parameters")
-        lower_array, upper_array = np.asarray(lower), np.asarray(upper)
-        jitter = np.asarray([(axis[1] - axis[0]) / 2 for axis in axes])
+        task_qs = [task_a_q] + [np.asarray(poses[n]) for n in selected[1:]]
         anchors = np.asarray([poses[n] for n in component])
         sampler = {
             "kind": "continuous_connected_joint_space",
@@ -126,9 +169,9 @@ def prepare(scene, output, host="localhost", port=23000, seed=2026,
             if any(np.max(np.abs(q - prior)) < 1e-6 for prior in accepted):
                 continue
             checks = []
-            for label, goal_node, goal_points in zip("ABC", selected, task_points):
+            for label, goal_node, goal_q, goal_points in zip("ABC", selected, task_qs, task_points):
                 path = route(graph, node, goal_node)
-                waypoints = np.vstack([q, [poses[n] for n in path]])
+                waypoints = np.vstack([q, [poses[n] for n in path], goal_q])
                 ok, steps, reason = drive_route(sim, waypoints, goal_points, tolerance, max_steps, clearance)
                 checks.append({"task": label, "passed": ok, "steps": steps, "reason": reason})
                 sim.stop()
@@ -152,14 +195,15 @@ def prepare(scene, output, host="localhost", port=23000, seed=2026,
                 "A": "original_scene_markers",
                 "B_C": "central_well_connected_safe_goals",
             },
-            "tasks": [{"id": label, "q": poses[n].tolist(), "points": np.asarray(goal).tolist()}
-                      for label, n, goal in zip("ABC", selected, task_points)],
+            "tasks": [{"id": label, "q": np.asarray(goal_q).tolist(),
+                       "points": np.asarray(goal).tolist()}
+                      for label, goal_q, goal in zip("ABC", task_qs, task_points)],
             "training_sampler": sampler,
             "eval_starts": [q.tolist() for q in accepted],
             "dynamic_validation": {"all_passed": True, "evaluation_attempts": validation},
             "preview_paths": {label: np.vstack([accepted[0], [poses[n] for n in route(
-                                  graph, accepted_anchors[0], goal)]]).tolist()
-                              for label, goal in zip("ABC", selected)},
+                                  graph, accepted_anchors[0], goal)], goal_q]).tolist()
+                              for label, goal, goal_q in zip("ABC", selected, task_qs)},
         }
         validate_tasks(data)
         write_json(output, data)

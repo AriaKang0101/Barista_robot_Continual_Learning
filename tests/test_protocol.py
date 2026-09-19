@@ -5,6 +5,7 @@ from gymnasium.utils.env_checker import check_env
 
 from barista_cl.core import continual_metrics, largest_component, load_config, reached, route, validate_tasks, write_json
 from barista_cl.env import BaristaEnv
+from barista_cl.prepare import refine_original_goal
 
 
 def test_joint_success_is_and_and_strict():
@@ -121,3 +122,24 @@ def test_per_task_linear_schedule_restarts():
     assert schedule(None) == pytest.approx(5e-5)
     schedule.reset()
     assert schedule(None) == pytest.approx(3e-4)
+
+
+def test_original_goal_is_refined_between_coarse_grid_nodes(fake_sim):
+    poses = {(0, 0): np.array([0.0, 0.0]),
+             (1, 0): np.array([0.6, 0.0]),
+             (0, 1): np.array([0.0, 0.6])}
+    graph = {(0, 0): {(1, 0), (0, 1)},
+             (1, 0): {(0, 0)}, (0, 1): {(0, 0)}}
+    points = {}
+    for node, q in poses.items():
+        fake_sim.start_at(q)
+        points[node] = fake_sim.points().tolist()
+    fake_sim.start_at([0.15, 0.15])
+    goal = fake_sim.points()
+    q, anchor, errors = refine_original_goal(
+        fake_sim, graph, poses, points, list(poses), goal, 0.03,
+        np.array([0.3, 0.3]), np.array([-1.2, -1.2]), np.array([1.2, 1.2]),
+        subdivisions=21, candidate_anchors=3)
+    assert anchor in poses
+    assert np.all(errors < 0.03)
+    np.testing.assert_allclose(q, [0.15, 0.15], atol=0.031)
