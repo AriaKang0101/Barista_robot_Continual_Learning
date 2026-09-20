@@ -13,14 +13,13 @@ def test_automatic_goal_preparation(monkeypatch, tmp_path):
     import barista_cl.prepare as module
     monkeypatch.setattr(module, "Simulator", FakeSimulator)
     path = tmp_path / "tasks.json"
-    module.prepare("unused.ttt", path, grid_size=7, eval_starts=3)
+    module.prepare("unused.ttt", path, grid_size=7, eval_starts=6)
     tasks = read_json(path)
     validate_tasks(tasks)
-    assert tasks["schema_version"] == 3
-    assert tasks["goal_selection"]["A"] == "original_scene_markers"
-    np.testing.assert_allclose(tasks["tasks"][0]["points"], FakeSimulator().original_target_points())
+    assert tasks["schema_version"] == 4
+    assert tasks["protocol"] == "reachable_state_cl_v4"
     assert len(tasks["tasks"]) == 3
-    assert len(tasks["eval_starts"]) == 3
+    assert all(len(tasks["eval_starts"][task]) == 6 for task in "ABC")
     assert len(tasks["training_sampler"]["anchors"]) >= 3
 
 
@@ -30,7 +29,7 @@ def test_failed_dynamic_validation_writes_no_tasks(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "drive_route", lambda *a, **k: (False, 3, "collision"))
     output = tmp_path / "tasks.json"
     with pytest.raises(RuntimeError, match="Insufficient"):
-        module.prepare("unused.ttt", output, grid_size=5, eval_starts=3)
+        module.prepare("unused.ttt", output, grid_size=5, eval_starts=6)
     assert not output.exists()
 
 
@@ -56,7 +55,7 @@ def test_full_runner_two_methods_three_stages_and_reports(monkeypatch, tmp_path,
         paths.append(path)
         with (path / "evaluation_episodes.csv").open() as f:
             rows = list(csv.DictReader(f))
-        assert len(rows) == (1 + 2 + 3) * len(task_data["eval_starts"])
+        assert len(rows) == (1 + 2 + 3) * len(task_data["eval_starts"]["A"])
         assert {r["task"] for r in rows if r["stage"] == "3"} == set("ABC")
     # Consolidation and evaluation must not alter first-stage PPO parameters.
     a = EWCPPO.load(paths[0] / "stage_1_A.zip", device="cpu")

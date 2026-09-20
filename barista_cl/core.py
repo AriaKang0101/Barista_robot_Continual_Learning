@@ -86,8 +86,11 @@ def route(graph, source, target):
 
 
 def validate_tasks(data):
-    if data.get("schema_version") not in (2, 3) or data.get("scene_blob") != SCENE_BLOB:
+    schema = data.get("schema_version")
+    if schema not in (2, 3, 4) or data.get("scene_blob") != SCENE_BLOB:
         raise ValueError("Tasks must be prepared from the pinned original scene")
+    if schema == 4 and data.get("protocol") != "reachable_state_cl_v4":
+        raise ValueError("Invalid protocol v4 identifier")
     tasks = data.get("tasks", [])
     if len(tasks) != 3 or {t["id"] for t in tasks} != {"A", "B", "C"}:
         raise ValueError("Expected three task IDs: A, B, C")
@@ -103,7 +106,9 @@ def validate_tasks(data):
             if goal_separation(tasks[i]["points"], tasks[j]["points"]) <= 2 * tol:
                 raise ValueError("Overlapping task success regions")
     sampler = data.get("training_sampler", {})
-    if sampler.get("kind") != "continuous_connected_joint_space":
+    expected_kind = ("task_conditioned_graph_curriculum" if schema == 4
+                     else "continuous_connected_joint_space")
+    if sampler.get("kind") != expected_kind:
         raise ValueError("Invalid training sampler kind")
     anchors = np.asarray(sampler.get("anchors", []), dtype=float)
     lower = np.asarray(sampler.get("lower", []), dtype=float)
@@ -122,11 +127,32 @@ def validate_tasks(data):
     exclusion = sampler.get("joint1_exclusion_abs", np.nan)
     if not np.isfinite(exclusion) or exclusion < 0:
         raise ValueError("Invalid joint1 exclusion")
-    poses = np.asarray(data.get("eval_starts", []), dtype=float)
-    if poses.ndim != 2 or poses.shape[1:] != (2,) or len(poses) < 3 or not np.all(np.isfinite(poses)):
-        raise ValueError("Invalid eval_starts")
-    if len({tuple(q) for q in poses}) != len(poses):
-        raise ValueError("Evaluation starts must be distinct")
+    if schema == 4:
+        orders = sampler.get("task_anchor_order", {})
+        if set(orders) != {"A", "B", "C"}:
+            raise ValueError("Missing per-task curriculum anchor order")
+        for task, order in orders.items():
+            if (len(order) != len(anchors) or sorted(order) != list(range(len(anchors)))):
+                raise ValueError(f"Task {task} curriculum must order every anchor once")
+        starts, bands = data.get("eval_starts", {}), data.get("eval_bands", {})
+        if set(starts) != {"A", "B", "C"} or set(bands) != {"A", "B", "C"}:
+            raise ValueError("Expected task-specific A/B/C evaluation starts and bands")
+        for task in "ABC":
+            poses = np.asarray(starts[task], dtype=float)
+            if (poses.ndim != 2 or poses.shape[1:] != (2,) or len(poses) < 3
+                    or not np.all(np.isfinite(poses))):
+                raise ValueError(f"Invalid eval_starts for task {task}")
+            if len({tuple(q) for q in poses}) != len(poses):
+                raise ValueError(f"Task {task} evaluation starts must be distinct")
+            if (len(bands[task]) != len(poses)
+                    or set(bands[task]) != {"near", "medium", "far"}):
+                raise ValueError(f"Invalid evaluation bands for task {task}")
+    else:
+        poses = np.asarray(data.get("eval_starts", []), dtype=float)
+        if poses.ndim != 2 or poses.shape[1:] != (2,) or len(poses) < 3 or not np.all(np.isfinite(poses)):
+            raise ValueError("Invalid eval_starts")
+        if len({tuple(q) for q in poses}) != len(poses):
+            raise ValueError("Evaluation starts must be distinct")
     if not data.get("dynamic_validation", {}).get("all_passed"):
         raise ValueError("Run prepare: every start/goal pair must pass dynamic validation")
 
@@ -156,8 +182,8 @@ def continual_metrics(matrix):
 
 def load_config(path):
     cfg = read_json(path)
-    # v2 configurations used one constant learning rate. Keep them runnable,
-    # while v3 can reproduce the upstream per-task linear schedule.
+    # Legacy configurations used one constant learning rate. Keep them runnable
+    # while v4 uses a per-task linear schedule.
     if "learning_rate_start" not in cfg and "learning_rate" in cfg:
         cfg["learning_rate_start"] = cfg["learning_rate"]
     if "learning_rate_end" not in cfg and "learning_rate" in cfg:
@@ -178,9 +204,9 @@ def load_config(path):
             raise ValueError(f"{name} must be finite and positive")
     if cfg["learning_rate_end"] > cfg["learning_rate_start"]:
         raise ValueError("learning_rate_end cannot exceed learning_rate_start")
-    mode = cfg.setdefault("observation_mode", "image_goal_joints")
-    if mode not in ("image_goal", "image_goal_joints"):
-        raise ValueError("observation_mode must be image_goal or image_goal_joints")
+    mode = cfg.setdefault("observation_mode", "state_goal")
+    if mode not in ("state_goal", "image_state_goal", "image_goal", "image_goal_joints"):
+        raise ValueError("Invalid observation_mode")
     initial = cfg.get("curriculum_initial_fraction")
     full = cfg.get("curriculum_full_fraction")
     if not isinstance(initial, (int, float)) or not 0 < initial <= 1:

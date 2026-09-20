@@ -86,8 +86,8 @@ def evaluate(model, env, task_ids, output, stage):
                 env.set_task(task)
                 # Every held-out random start is used exactly once. The saved
                 # bank is shared by all methods and training seeds.
-                for episode, start in enumerate(range(len(env.starts))):
-                    obs, _ = env.reset(seed=100000 + episode, options={"start_index": start})
+                for episode, start in enumerate(range(env.evaluation_count(task))):
+                    obs, reset_info = env.reset(seed=100000 + episode, options={"start_index": start})
                     total = 0.0
                     while True:
                         action, _ = model.predict(obs, deterministic=True)
@@ -97,7 +97,8 @@ def evaluate(model, env, task_ids, output, stage):
                             break
                     row = {
                         "stage": stage, "task": task, "episode": episode,
-                        "start_index": start, "success": int(info["is_success"]),
+                        "start_index": start, "start_band": reset_info.get("start_band"),
+                        "success": int(info["is_success"]),
                         "collision": int(info["collision"]), "timeout": int(info["done_reason"] == "timeout"),
                         "steps": env.steps, "return": total,
                         "distance_joint2": info["distance_joint2"], "distance_ee": info["distance_ee"],
@@ -197,7 +198,17 @@ def run(scene, tasks_path, config_path, output, method, seed=None, device=None,
                 manifest["completed_stages"] = stage
                 write_json(output / "manifest.json", manifest)
             vector.close()
-        write_json(output / "metrics.json", continual_metrics(matrix))
+        metrics = continual_metrics(matrix)
+        if tasks["schema_version"] == 4:
+            metrics["final_success_by_band"] = {
+                band: float(np.mean([r["success"] for r in rows if r["start_band"] == band]))
+                for band in ["near", "medium", "far"]
+            }
+            metrics["final_collision_by_band"] = {
+                band: float(np.mean([r["collision"] for r in rows if r["start_band"] == band]))
+                for band in ["near", "medium", "far"]
+            }
+        write_json(output / "metrics.json", metrics)
         manifest["status"] = "complete"
     except BaseException as exc:
         manifest["status"] = "interrupted" if isinstance(exc, KeyboardInterrupt) else "failed"

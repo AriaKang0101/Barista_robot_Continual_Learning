@@ -13,10 +13,10 @@
   "ent_coef": 0.01,
   "vf_coef": 0.5,
   "max_grad_norm": 0.5,
-  "ewc_lambda": 1000.0,
+  "ewc_lambda": 100.0,
   "fisher_samples": 128,
-  "curriculum_initial_fraction": 1.0,
-  "curriculum_full_fraction": 1.0,
-  "observation_mode": "image_goal",
+  "curriculum_initial_fraction": 0.1,
+  "curriculum_full_fraction": 0.8,
+  "observation_mode": "state_goal",
   "task_order": ["A", "B", "C"]
 }

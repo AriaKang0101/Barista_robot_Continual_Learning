@@ -5,7 +5,6 @@ from gymnasium.utils.env_checker import check_env
 
 from barista_cl.core import continual_metrics, largest_component, load_config, reached, route, validate_tasks, write_json
 from barista_cl.env import BaristaEnv
-from barista_cl.prepare import refine_original_goal
 
 
 def test_joint_success_is_and_and_strict():
@@ -43,7 +42,7 @@ def test_invalid_goals_and_overlap_rejected(task_data):
     with pytest.raises(ValueError, match="prepare"):
         validate_tasks(bad)
     bad = copy.deepcopy(task_data)
-    bad["eval_starts"][1] = bad["eval_starts"][0]
+    bad["eval_starts"]["A"][1] = bad["eval_starts"]["A"][0]
     with pytest.raises(ValueError, match="distinct"):
         validate_tasks(bad)
 
@@ -57,13 +56,12 @@ def test_environment_seed_frame_reset_and_checker(fake_sim, task_data):
     b, bi = env.reset(seed=77)
     assert ai["task_id"] == bi["task_id"] and ai["start_index"] == bi["start_index"]
     np.testing.assert_allclose(ai["start_q"], bi["start_q"])
-    np.testing.assert_array_equal(a["image"], b["image"])
-    assert b["goal"].shape == (6,)
-    assert b["joints"].shape == (2,)
-    assert np.all(np.abs(b["joints"]) <= 1)
+    np.testing.assert_array_equal(a["state"], b["state"])
+    assert b["state"].shape == (6,)
+    assert np.all(np.abs(b["state"]) <= 1)
     assert fake_sim.last_curriculum_fraction == pytest.approx(0.25)
+    assert fake_sim.last_anchor_indices == [0]
     np.testing.assert_allclose(fake_sim.last_target_q, task_data["tasks"][0]["q"])
-    np.testing.assert_array_equal(b["image"][0], b["image"][-1])
 
 
 def test_collision_takes_priority_over_success(fake_sim, task_data):
@@ -86,7 +84,16 @@ def test_timeout_and_task_switch(fake_sim, task_data):
     assert not terminated and truncated and info["done_reason"] == "timeout"
     env.set_task("B")
     obs_b, _ = env.reset(seed=0)
-    assert not np.array_equal(obs_a["goal"], obs_b["goal"])
+    assert not np.array_equal(obs_a["state"][4:], obs_b["state"][4:])
+
+
+def test_task_specific_evaluation_start_and_band(fake_sim, task_data):
+    env = BaristaEnv(fake_sim, task_data, split="eval")
+    env.set_task("B")
+    _, info = env.reset(options={"start_index": 1})
+    np.testing.assert_allclose(info["start_q"], task_data["eval_starts"]["B"][1])
+    assert info["start_band"] == "medium"
+    assert env.evaluation_count("B") == 3
 
 
 def test_image_goal_mode_omits_joint_ablation(fake_sim, task_data):
@@ -95,7 +102,7 @@ def test_image_goal_mode_omits_joint_ablation(fake_sim, task_data):
     assert set(obs) == {"image", "goal"}
 
 
-def test_v2_constant_learning_rate_config_is_backward_compatible(tmp_path):
+def test_constant_learning_rate_config_is_backward_compatible(tmp_path):
     config = {
         "seed": 0, "device": "cpu", "timesteps_per_task": 8,
         "n_steps": 8, "batch_size": 4, "n_epochs": 1,
@@ -109,7 +116,7 @@ def test_v2_constant_learning_rate_config_is_backward_compatible(tmp_path):
     write_json(path, config)
     loaded = load_config(path)
     assert loaded["learning_rate_start"] == loaded["learning_rate_end"] == 0.0003
-    assert loaded["observation_mode"] == "image_goal_joints"
+    assert loaded["observation_mode"] == "state_goal"
 
 
 def test_per_task_linear_schedule_restarts():
@@ -122,40 +129,3 @@ def test_per_task_linear_schedule_restarts():
     assert schedule(None) == pytest.approx(5e-5)
     schedule.reset()
     assert schedule(None) == pytest.approx(3e-4)
-
-
-def test_original_goal_is_refined_between_coarse_grid_nodes(fake_sim):
-    poses = {(0, 0): np.array([0.0, 0.0]),
-             (1, 0): np.array([0.6, 0.0]),
-             (0, 1): np.array([0.0, 0.6])}
-    graph = {(0, 0): {(1, 0), (0, 1)},
-             (1, 0): {(0, 0)}, (0, 1): {(0, 0)}}
-    points = {}
-    for node, q in poses.items():
-        fake_sim.start_at(q)
-        points[node] = fake_sim.points().tolist()
-    fake_sim.start_at([0.15, 0.15])
-    goal = fake_sim.points()
-    q, anchor, errors = refine_original_goal(
-        fake_sim, graph, poses, points, list(poses), goal, 0.03,
-        np.array([0.3, 0.3]), np.array([-1.2, -1.2]), np.array([1.2, 1.2]),
-        subdivisions=21, candidate_anchors=3)
-    assert anchor in poses
-    assert np.all(errors < 0.03)
-    np.testing.assert_allclose(q, [0.15, 0.15], atol=0.031)
-
-
-def test_original_goal_global_fallback_searches_outside_safe_anchor_cell(fake_sim):
-    poses = {(0, 0): np.array([0.0, 0.0])}
-    graph = {(0, 0): set()}
-    fake_sim.start_at([0.0, 0.0])
-    points = {(0, 0): fake_sim.points().tolist()}
-    fake_sim.start_at([0.6, 0.6])
-    goal = fake_sim.points()
-    q, anchor, errors = refine_original_goal(
-        fake_sim, graph, poses, points, [(0, 0)], goal, 0.03,
-        np.array([0.1, 0.1]), np.array([-1.0, -1.0]), np.array([1.0, 1.0]),
-        subdivisions=5, candidate_anchors=1)
-    assert anchor == (0, 0)
-    assert np.all(errors < 0.03)
-    np.testing.assert_allclose(q, [0.6, 0.6], atol=0.026)

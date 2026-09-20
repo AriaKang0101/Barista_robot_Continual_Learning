@@ -133,6 +133,9 @@ class Simulator:
     def joint_positions(self):
         return np.asarray([self.sim.getJointPosition(h) for h in self.joints])
 
+    def joint_velocities(self):
+        return np.asarray([self.sim.getJointVelocity(h) for h in self.joints])
+
     def points(self):
         return np.asarray([self.sim.getObjectPosition(self.handles[k], -1) for k in ["j2", "ee"]])
 
@@ -154,7 +157,7 @@ class Simulator:
         return True
 
     def random_safe_start(self, rng, sampler, goals, tolerance, target_q=None,
-                          curriculum_fraction=1.0):
+                          curriculum_fraction=1.0, anchor_indices=None):
         """Start at a new continuous safe pose sampled around the connected safe set."""
         anchors = np.asarray(sampler["anchors"], dtype=float)
         lower = np.asarray(sampler["lower"], dtype=float)
@@ -165,7 +168,13 @@ class Simulator:
         goals = np.asarray(goals, dtype=float)
         if not 0 < curriculum_fraction <= 1:
             raise ValueError("curriculum_fraction must be in (0, 1]")
-        if target_q is not None and curriculum_fraction < 1:
+        if anchor_indices is not None:
+            indices = np.asarray(anchor_indices, dtype=int)
+            if (indices.ndim != 1 or len(indices) < 1 or np.any(indices < 0)
+                    or np.any(indices >= len(anchors))):
+                raise ValueError("Invalid curriculum anchor indices")
+            anchors = anchors[indices]
+        elif target_q is not None and curriculum_fraction < 1:
             target_q = np.asarray(target_q, dtype=float)
             scale = upper - lower
             distance = np.max(np.abs((anchors - target_q) / scale), axis=1)

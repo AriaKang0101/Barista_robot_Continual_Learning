@@ -8,7 +8,7 @@ import sys
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--scene", default="scenes/safety_rl_2dof.ttt")
-    parser.add_argument("--tasks", default="artifacts/tasks_v3.json")
+    parser.add_argument("--tasks", default="artifacts/tasks_v4.json")
     parser.add_argument("--config", default="configs/default.json")
     parser.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
     parser.add_argument("--output", default="runs/comparison")
