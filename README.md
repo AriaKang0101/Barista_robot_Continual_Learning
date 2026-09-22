@@ -150,6 +150,24 @@ python scripts/run_comparison.py --seeds 0 1 2 --output runs/v4_comparison
 
 하나의 CoppeliaSim 인스턴스에서는 반드시 직렬 실행합니다.
 
+### CoppeliaSim 통신 중단 후 Task 경계에서 재개
+
+학습 도중 ZeroMQ 연결이 끊겨도 완료된 Task의 `stage_*.zip`은 보존됩니다.
+예를 들어 EWC가 Task C 도중 실패했고 `stage_2_B.zip`과
+`completed_stages: 2`가 남았다면, 실패 폴더를 수정하지 않고 새 폴더로
+Task C 전체를 다시 학습할 수 있습니다.
+
+```bat
+python -m barista_cl train --method ewc --resume-from runs/v4_ewc_seed0 --output runs/v4_ewc_seed0_resumed
+```
+
+재개 실행은 실패한 Task의 부분 로그를 제외하고 완료된 단계의 checkpoint,
+평가 로그와 성공률 행렬을 새 출력에 복사합니다. 기존 v4 checkpoint에는
+난수 생성기 상태가 별도로 저장되지 않았으므로 `resume_rng_exact`은 `false`로
+기록됩니다. 학습 예산과 EWC 상태는 보존되지만, 최종 논문의 반복 실험은
+중단 없이 완료된 run을 우선 사용합니다. 동일한 실패 폴더나 출력 폴더를
+덮어쓰지 않습니다.
+
 ## 학습 단계와 평가 행렬
 
 | 완료 단계 | 이번에 학습한 Task | 평가 Task |
