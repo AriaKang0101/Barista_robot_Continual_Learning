@@ -5,6 +5,7 @@ import csv
 import importlib.metadata
 import platform
 import random
+import shutil
 import time
 from pathlib import Path
 
@@ -75,6 +76,23 @@ def append_csv(path, row):
         writer.writerow(row)
 
 
+def copy_csv_through_stage(source, destination, completed_stages):
+    """Copy only committed stage rows, excluding a failed task's partial log."""
+    source, destination = Path(source), Path(destination)
+    if not source.exists():
+        return
+    with source.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames
+        rows = [row for row in reader if int(row["stage"]) <= completed_stages]
+    if not fieldnames:
+        return
+    with destination.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def evaluate(model, env, task_ids, output, stage):
     """Frozen deterministic evaluation on held-out initial configurations."""
     rows = []
@@ -119,16 +137,41 @@ def versions():
 
 
 def run(scene, tasks_path, config_path, output, method, seed=None, device=None,
-        host="localhost", port=23000, only_task=None):
-    config, tasks = load_config(config_path), read_json(tasks_path)
+        host="localhost", port=23000, only_task=None, resume_from=None):
+    resume_source = Path(resume_from).resolve() if resume_from else None
+    source_manifest = None
+    completed_stages = 0
+    if resume_source:
+        if only_task:
+            raise ValueError("--only-task cannot be combined with --resume-from")
+        for name in ["manifest.json", "config.json", "tasks.json", "success_matrix.csv"]:
+            if not (resume_source / name).is_file():
+                raise FileNotFoundError(f"Resume source is missing {name}: {resume_source}")
+        source_manifest = read_json(resume_source / "manifest.json")
+        if source_manifest.get("status") not in ("failed", "interrupted"):
+            raise ValueError("Resume source must have failed or interrupted status")
+        if source_manifest.get("method") != method:
+            raise ValueError("--method must match the resume source")
+        completed_stages = int(source_manifest.get("completed_stages", 0))
+        order = list(source_manifest["task_order"])
+        if not 0 < completed_stages < len(order):
+            raise ValueError("Resume source has no recoverable incomplete stage boundary")
+        config, tasks = load_config(resume_source / "config.json"), read_json(resume_source / "tasks.json")
+        if seed is not None and seed != source_manifest["seed"]:
+            raise ValueError("--seed must match the resume source")
+        if device is not None and device != config["device"]:
+            raise ValueError("--device must match the saved config when resuming")
+        seed = source_manifest["seed"]
+    else:
+        config, tasks = load_config(config_path), read_json(tasks_path)
+        if seed is not None:
+            config["seed"] = seed
+        if device is not None:
+            config["device"] = device
+        order = [only_task] if only_task else config["task_order"]
     validate_tasks(tasks)
     if method not in ("sequential", "ewc"):
         raise ValueError("method must be sequential or ewc")
-    if seed is not None:
-        config["seed"] = seed
-    if device is not None:
-        config["device"] = device
-    order = [only_task] if only_task else config["task_order"]
     if any(t not in "ABC" for t in order):
         raise ValueError("Invalid task")
     output = Path(output)
@@ -147,10 +190,43 @@ def run(scene, tasks_path, config_path, output, method, seed=None, device=None,
     write_json(output / "config.json", config)
     manifest = {"method": method, "seed": seed, "task_order": order,
                 "tasks_sha256": digest(tasks), "versions": versions(),
-                "status": "running", "actual_training_steps": 0,
+                "status": "running",
+                "actual_training_steps": completed_stages * config["timesteps_per_task"],
                 "fisher_source": "final current-task rollout; no extra environment interaction"}
+    if resume_source:
+        if source_manifest["tasks_sha256"] != manifest["tasks_sha256"]:
+            raise ValueError("Resume task digest does not match its saved tasks.json")
+        if source_manifest["versions"] != manifest["versions"]:
+            raise ValueError("Runtime/package versions differ from the resume source")
+        checkpoint = resume_source / f"stage_{completed_stages}_{order[completed_stages - 1]}.zip"
+        if not checkpoint.is_file():
+            raise FileNotFoundError(f"Resume checkpoint not found: {checkpoint}")
+        manifest.update({
+            "completed_stages": completed_stages,
+            "resumed_from": str(resume_source),
+            "resume_checkpoint": checkpoint.name,
+            "resume_rng_exact": False,
+            "elapsed_seconds_scope": "resume_session_only",
+        })
+        for stage, task in enumerate(order[:completed_stages], start=1):
+            shutil.copy2(resume_source / f"stage_{stage}_{task}.zip",
+                         output / f"stage_{stage}_{task}.zip")
+        copy_csv_through_stage(resume_source / "training_episodes.csv",
+                               output / "training_episodes.csv", completed_stages)
+        copy_csv_through_stage(resume_source / "evaluation_episodes.csv",
+                               output / "evaluation_episodes.csv", completed_stages)
     write_json(output / "manifest.json", manifest)
-    matrix = np.full((len(order), len(order)), np.nan)
+    if resume_source:
+        matrix = np.loadtxt(resume_source / "success_matrix.csv", delimiter=",",
+                            skiprows=1, ndmin=2)
+        if matrix.shape != (len(order), len(order)):
+            raise ValueError("Resume success matrix has the wrong shape")
+        matrix[completed_stages:, :] = np.nan
+        matrix[:, completed_stages:] = np.nan
+        np.savetxt(output / "success_matrix.csv", matrix, delimiter=",",
+                   header=",".join(order), comments="")
+    else:
+        matrix = np.full((len(order), len(order)), np.nan)
     start_time = time.monotonic()
     try:
         with Simulator(scene, host, port) as sim:
@@ -161,14 +237,29 @@ def run(scene, tasks_path, config_path, output, method, seed=None, device=None,
                                                   config["learning_rate_end"])
             args = {k: config[k] for k in ["n_steps", "batch_size", "n_epochs", "gamma",
                                             "gae_lambda", "clip_range", "ent_coef", "vf_coef", "max_grad_norm"]}
-            model = EWCPPO("MultiInputPolicy", vector,
-                           ewc_lambda=config["ewc_lambda"] if method == "ewc" else 0.0,
-                           policy_kwargs={"net_arch": {"pi": [64, 64], "vf": [64, 64]}},
-                           seed=seed, device=config["device"], verbose=1,
-                           tensorboard_log=str(output / "tensorboard"),
-                           learning_rate=learning_rate, **args)
+            if resume_source:
+                model = EWCPPO.load(checkpoint, env=vector, device=config["device"])
+                model.verbose = 1
+                model.tensorboard_log = str(output / "tensorboard")
+                # Restart the per-task schedule for the incomplete next task.
+                model.learning_rate = learning_rate
+                model.lr_schedule = learning_rate
+                expected_steps = completed_stages * config["timesteps_per_task"]
+                if model.num_timesteps != expected_steps:
+                    raise ValueError(
+                        f"Checkpoint has {model.num_timesteps} steps; expected {expected_steps}")
+                if method == "ewc" and len(model.ewc_terms) != completed_stages:
+                    raise ValueError("Checkpoint EWC terms do not match completed stages")
+            else:
+                model = EWCPPO("MultiInputPolicy", vector,
+                               ewc_lambda=config["ewc_lambda"] if method == "ewc" else 0.0,
+                               policy_kwargs={"net_arch": {"pi": [64, 64], "vf": [64, 64]}},
+                               seed=seed, device=config["device"], verbose=1,
+                               tensorboard_log=str(output / "tensorboard"),
+                               learning_rate=learning_rate, **args)
             manifest["resolved_device"] = str(model.device)
-            for stage, task in enumerate(order, start=1):
+            for stage in range(completed_stages + 1, len(order) + 1):
+                task = order[stage - 1]
                 train_env.set_task(task)
                 train_env.set_curriculum_fraction(config["curriculum_initial_fraction"])
                 learning_rate.reset()
@@ -216,5 +307,7 @@ def run(scene, tasks_path, config_path, output, method, seed=None, device=None,
         raise
     finally:
         manifest["elapsed_seconds"] = time.monotonic() - start_time
+        if resume_source:
+            manifest["source_failed_elapsed_seconds"] = source_manifest.get("elapsed_seconds")
         write_json(output / "manifest.json", manifest)
     print(f"Completed: {output}", flush=True)
