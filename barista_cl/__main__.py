@@ -84,6 +84,10 @@ def main():
     train.add_argument("--seed", type=int)
     train.add_argument("--device", choices=["auto", "cpu", "cuda"])
     train.add_argument("--only-task", choices=list("ABC"), help="Train one task from scratch for a learnability pilot")
+    train.add_argument(
+        "--resume-from",
+        help="Resume after the last completed task boundary in a failed/interrupted run; writes to a new --output",
+    )
     compare = commands.add_parser("compare", help="Plot completed paired runs and calculate forgetting/BWT")
     compare.add_argument("runs", nargs="+")
     compare.add_argument("--output", default="artifacts/comparison")
@@ -116,7 +120,7 @@ def main():
     elif args.command == "train":
         from .experiment import run
         run(args.scene, args.tasks, args.config, args.output, args.method, args.seed, args.device,
-            args.host, args.port, args.only_task)
+            args.host, args.port, args.only_task, args.resume_from)
     elif args.command == "compare":
         from .report import compare
         compare(args.runs, args.output)
