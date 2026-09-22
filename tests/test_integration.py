@@ -1,5 +1,6 @@
 import copy
 import csv
+import shutil
 
 import numpy as np
 import pytest
@@ -64,6 +65,37 @@ def test_full_runner_two_methods_three_stages_and_reports(monkeypatch, tmp_path,
         torch.testing.assert_close(v, b.policy.state_dict()[k], rtol=0, atol=0)
     c = EWCPPO.load(paths[1] / "stage_3_C.zip", device="cpu")
     assert len(c.ewc_terms) == 3
+
+    # A failed third stage can be restarted from the committed B boundary in a
+    # fresh output without retaining partial stage-C log rows.
+    failed = tmp_path / "failed_ewc"
+    shutil.copytree(paths[1], failed)
+    (failed / "stage_3_C.zip").unlink()
+    failed_manifest = read_json(failed / "manifest.json")
+    failed_manifest.update(status="failed", completed_stages=2,
+                           actual_training_steps=16, error="ZMQError: test disconnect")
+    write_json(failed / "manifest.json", failed_manifest)
+    failed_matrix = np.loadtxt(failed / "success_matrix.csv", delimiter=",",
+                               skiprows=1, ndmin=2)
+    failed_matrix[2, :] = np.nan
+    np.savetxt(failed / "success_matrix.csv", failed_matrix, delimiter=",",
+               header="A,B,C", comments="")
+    resumed = tmp_path / "resumed_ewc"
+    experiment.run("unused.ttt", tasks_path, config_path, resumed, "ewc",
+                   resume_from=failed)
+    resumed_manifest = read_json(resumed / "manifest.json")
+    assert resumed_manifest["status"] == "complete"
+    assert resumed_manifest["completed_stages"] == 3
+    assert resumed_manifest["actual_training_steps"] == 24
+    assert resumed_manifest["resume_checkpoint"] == "stage_2_B.zip"
+    assert len(EWCPPO.load(resumed / "stage_3_C.zip", device="cpu").ewc_terms) == 3
+    with (resumed / "evaluation_episodes.csv").open() as f:
+        resumed_evaluations = list(csv.DictReader(f))
+    assert len(resumed_evaluations) == (1 + 2 + 3) * len(task_data["eval_starts"]["A"])
+    with (resumed / "training_episodes.csv").open() as f:
+        resumed_training = list(csv.DictReader(f))
+    assert {row["stage"] for row in resumed_training} == {"1", "2", "3"}
+
     compare(paths, tmp_path / "report")
     assert (tmp_path / "report" / "retention.png").exists()
     assert read_json(tmp_path / "report" / "summary.json")["ewc"]["n_seeds"] == 1
